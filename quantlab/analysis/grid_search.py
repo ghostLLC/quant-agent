@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from itertools import product
 
 import pandas as pd
@@ -10,6 +11,18 @@ from quantlab.strategies.base import StrategySignalConfig
 from quantlab.strategies.ma_cross import generate_ma_signals
 
 
+def _build_signal_config(config: BacktestConfig) -> StrategySignalConfig:
+    return StrategySignalConfig(
+        short_window=config.short_window,
+        long_window=config.long_window,
+        enable_trend_filter=config.enable_trend_filter,
+        trend_window=config.trend_window,
+        enable_volatility_filter=config.enable_volatility_filter,
+        volatility_window=config.volatility_window,
+        max_volatility=config.max_volatility,
+    )
+
+
 def run_parameter_grid(price_df: pd.DataFrame, base_config: BacktestConfig, parameter_grid: dict[str, list]) -> tuple[pd.DataFrame, BacktestResult]:
     keys = list(parameter_grid.keys())
     rows: list[dict] = []
@@ -18,17 +31,8 @@ def run_parameter_grid(price_df: pd.DataFrame, base_config: BacktestConfig, para
 
     for values in product(*(parameter_grid[key] for key in keys)):
         overrides = dict(zip(keys, values))
-        config = BacktestConfig(**{**base_config.__dict__, **overrides})
-        signal_config = StrategySignalConfig(
-            short_window=config.short_window,
-            long_window=config.long_window,
-            enable_trend_filter=config.enable_trend_filter,
-            trend_window=config.trend_window,
-            enable_volatility_filter=config.enable_volatility_filter,
-            volatility_window=config.volatility_window,
-            max_volatility=config.max_volatility,
-        )
-        signal_df = generate_ma_signals(price_df, signal_config)
+        config = BacktestConfig(**{**asdict(base_config), **overrides})
+        signal_df = generate_ma_signals(price_df, _build_signal_config(config))
         result = run_long_only_backtest(signal_df, config)
 
         row = {**overrides, **result.metrics}

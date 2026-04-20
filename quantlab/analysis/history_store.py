@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 import json
@@ -11,14 +10,20 @@ import pandas as pd
 from quantlab.config import HISTORY_REPORT_DIR
 
 
+def _normalize_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, dict):
+        return {key: _normalize_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_value(item) for item in value]
+    return value
+
+
 def _stringify_payload(payload: dict) -> dict:
-    normalized = {}
-    for key, value in payload.items():
-        if isinstance(value, Path):
-            normalized[key] = str(value)
-        else:
-            normalized[key] = value
-    return normalized
+    return {key: _normalize_value(value) for key, value in payload.items()}
 
 
 def save_experiment_record(
@@ -54,16 +59,29 @@ def load_experiment_history(history_dir: str | Path = HISTORY_REPORT_DIR) -> pd.
     rows: list[dict] = []
     for file in sorted(history_path.glob("*.json"), reverse=True):
         record = json.loads(file.read_text(encoding="utf-8"))
+        metrics = record.get("metrics", {})
+        notes = record.get("notes", {})
         row = {
             "experiment_id": record.get("experiment_id"),
             "timestamp": record.get("timestamp"),
             "experiment_type": record.get("experiment_type"),
-            **record.get("metrics", {}),
-            "notes": json.dumps(record.get("notes", {}), ensure_ascii=False),
+            "fold_count": notes.get("overview", {}).get("fold_count"),
+            "primary_metric": metrics.get("annual_return")
+            or metrics.get("test_annual_return")
+            or metrics.get("average_test_annual_return")
+            or metrics.get("train_annual_return"),
+            **metrics,
+            "notes": json.dumps(notes, ensure_ascii=False),
         }
         rows.append(row)
 
-    return pd.DataFrame(rows)
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    if "timestamp" in df.columns:
+        df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+    return df
 
 
 def load_experiment_detail(experiment_id: str, history_dir: str | Path = HISTORY_REPORT_DIR) -> dict | None:

@@ -61,3 +61,54 @@ def build_grid_scatter(summary_df: pd.DataFrame) -> go.Figure:
     fig.update_xaxes(title="最大回撤", tickformat=".0%")
     fig.update_yaxes(title="年化收益率", tickformat=".0%")
     return fig
+
+
+def build_walk_forward_compare_figure(fold_summary: pd.DataFrame) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=fold_summary["fold_id"],
+            y=fold_summary["test_annual_return"],
+            mode="lines+markers",
+            name="Walk-forward 样本外年化",
+            line=dict(width=2.6, color="#d14b4b"),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=fold_summary["fold_id"],
+            y=fold_summary["baseline_test_annual_return"],
+            mode="lines+markers",
+            name="基线样本外年化",
+            line=dict(width=2.2, dash="dot", color="#1f8f55"),
+        )
+    )
+    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=30, b=20), height=420)
+    fig.update_xaxes(title="窗口编号", dtick=1)
+    fig.update_yaxes(title="年化收益率", tickformat=".0%")
+    return fig
+
+
+def build_history_metric_compare_figure(history_df: pd.DataFrame, metric_key: str) -> go.Figure:
+    plot_df = history_df.copy()
+    plot_df = plot_df.dropna(subset=[metric_key])
+    if plot_df.empty:
+        fig = go.Figure()
+        fig.update_layout(template="plotly_white", height=320)
+        return fig
+
+    fig = px.bar(
+        plot_df,
+        x="timestamp",
+        y=metric_key,
+        color="experiment_type",
+        hover_data=["experiment_id"],
+        title=f"历史实验指标对比：{metric_key}",
+    )
+    fig.update_layout(template="plotly_white", margin=dict(l=20, r=20, t=50, b=20), height=420)
+    if "sharpe" in metric_key:
+        fig.update_yaxes(title=metric_key)
+    else:
+        fig.update_yaxes(title=metric_key, tickformat=".0%")
+    fig.update_xaxes(title="实验时间")
+    return fig

@@ -8,13 +8,21 @@ import streamlit as st
 
 from quantlab.config import BacktestConfig, DEFAULT_DATA_PATH
 from quantlab.pipeline import (
+    get_experiment_detail,
     get_experiment_history,
     refresh_market_data,
     run_grid_experiment,
     run_single_backtest,
     run_train_test_experiment,
+    run_walk_forward_experiment,
 )
-from quantlab.visualization.charts import build_equity_figure, build_grid_scatter, build_price_signal_figure
+from quantlab.visualization.charts import (
+    build_equity_figure,
+    build_grid_scatter,
+    build_history_metric_compare_figure,
+    build_price_signal_figure,
+    build_walk_forward_compare_figure,
+)
 
 st.set_page_config(page_title="量化研究面板", page_icon="📈", layout="wide")
 
@@ -114,6 +122,10 @@ def build_config_from_sidebar() -> tuple[BacktestConfig, Path]:
         stop_loss_pct = st.number_input("止损阈值", min_value=0.0, value=0.08, step=0.01, format="%.2f") if use_stop_loss else None
         min_holding_days = st.slider("最小持有天数", 0, 30, 0)
         train_ratio = st.slider("训练集占比", 0.5, 0.9, 0.7, step=0.05)
+        st.markdown("### Walk-forward 设置")
+        walk_forward_train_window = st.slider("训练窗口（交易日）", 252, 1000, 504, step=21)
+        walk_forward_test_window = st.slider("测试窗口（交易日）", 42, 252, 126, step=21)
+        walk_forward_step_size = st.slider("滚动步长（交易日）", 21, 252, 126, step=21)
 
     config = BacktestConfig(
         initial_capital=initial_capital,
@@ -129,6 +141,9 @@ def build_config_from_sidebar() -> tuple[BacktestConfig, Path]:
         stop_loss_pct=stop_loss_pct,
         min_holding_days=min_holding_days,
         train_ratio=train_ratio,
+        walk_forward_train_window=walk_forward_train_window,
+        walk_forward_test_window=walk_forward_test_window,
+        walk_forward_step_size=walk_forward_step_size,
     )
     return config, Path(data_path)
 
@@ -146,12 +161,38 @@ def render_downloads(config: BacktestConfig) -> None:
         d3.download_button("下载交易记录", load_csv_bytes(str(trades_path)), file_name="trades.csv", use_container_width=True)
 
 
+def _build_parameter_grid(short_values, long_values, trend_values, stop_values) -> dict[str, list]:
+    return {
+        "short_window": sorted(short_values),
+        "long_window": sorted(long_values),
+        "enable_trend_filter": trend_values,
+        "stop_loss_pct": stop_values,
+    }
+
+
+def _render_history_detail(detail: dict | None) -> None:
+    if not detail:
+        st.info("未找到对应历史详情。")
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("#### 配置快照")
+        st.json(detail.get("config", {}), expanded=False)
+    with c2:
+        st.markdown("#### 指标快照")
+        st.json(detail.get("metrics", {}), expanded=False)
+
+    st.markdown("#### 备注 / 扩展信息")
+    st.json(detail.get("notes", {}), expanded=True)
+
+
 def main() -> None:
     st.markdown(
         """
         <div class="hero">
             <h1>沪深300 ETF 量化研究面板</h1>
-            <p>现在这套工作台已经支持真实数据更新、单次回测、参数实验、训练测试分离和实验历史留痕。你可以把它当成一个持续进化的量化研究底座。</p>
+            <p>现在这套工作台已经支持真实数据更新、单次回测、参数实验、训练测试分离、walk-forward 验证和实验历史留痕。前端面板会跟随后端研究能力同步扩展。</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -179,6 +220,9 @@ def main() -> None:
                     "stop_loss_pct": config.stop_loss_pct,
                     "min_holding_days": config.min_holding_days,
                     "train_ratio": config.train_ratio,
+                    "walk_forward_train_window": config.walk_forward_train_window,
+                    "walk_forward_test_window": config.walk_forward_test_window,
+                    "walk_forward_step_size": config.walk_forward_step_size,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -186,7 +230,7 @@ def main() -> None:
             language="json",
         )
 
-    tab1, tab2, tab3, tab4 = st.tabs(["单次回测", "参数对比实验", "训练 / 测试验证", "实验历史"])
+    tab1, tab2, tab3, tab4 = st.tabs(["单次回测", "参数对比实验", "验证实验", "实验历史"])
 
     with tab1:
         if st.button("运行单次回测", type="primary", use_container_width=True):
@@ -214,12 +258,7 @@ def main() -> None:
         stop_values = g4.multiselect("止损候选", [None, 0.05, 0.08, 0.1], default=[None, 0.05, 0.08], format_func=lambda x: "无止损" if x is None else f"{x:.0%}")
 
         if st.button("运行参数对比", use_container_width=True):
-            grid = {
-                "short_window": sorted(short_values),
-                "long_window": sorted(long_values),
-                "enable_trend_filter": trend_values,
-                "stop_loss_pct": stop_values,
-            }
+            grid = _build_parameter_grid(short_values, long_values, trend_values, stop_values)
             with st.spinner("正在扫描参数组合..."):
                 summary_df, best_result, _, history_path = run_grid_experiment(data_path, config, grid)
             st.success(f"参数实验完成，共 {len(summary_df)} 组组合，历史记录已保存到 {history_path.name}")
@@ -232,60 +271,120 @@ def main() -> None:
             st.download_button("下载参数实验结果", summary_bytes, file_name="grid_search_summary.csv", use_container_width=True)
 
     with tab3:
-        st.markdown("<div class='section-title'>训练 / 测试分离</div>", unsafe_allow_html=True)
-        st.markdown("<div class='subtle-panel'>先在训练集上找参数，再把最佳参数放到测试集看样本外表现，避免只看全样本结果时的过拟合错觉。</div>", unsafe_allow_html=True)
-
+        mode = st.radio("验证模式", ["训练 / 测试验证", "Walk-forward 验证"], horizontal=True)
         v1, v2, v3, v4 = st.columns(4)
-        train_short_values = v1.multiselect("训练短均线候选", [3, 5, 8, 10, 12, 15, 20], default=[5, 10, 15], key="train_short_values")
-        train_long_values = v2.multiselect("训练长均线候选", [20, 30, 40, 60, 90, 120], default=[20, 30, 60], key="train_long_values")
-        train_trend_values = v3.multiselect("训练趋势过滤", [False, True], default=[False, True], format_func=lambda x: "开启" if x else "关闭", key="train_trend_values")
-        train_stop_values = v4.multiselect("训练止损候选", [None, 0.05, 0.08, 0.1], default=[None, 0.05, 0.08], format_func=lambda x: "无止损" if x is None else f"{x:.0%}", key="train_stop_values")
+        val_short_values = v1.multiselect("验证短均线候选", [3, 5, 8, 10, 12, 15, 20], default=[5, 10, 15], key="val_short_values")
+        val_long_values = v2.multiselect("验证长均线候选", [20, 30, 40, 60, 90, 120], default=[20, 30, 60], key="val_long_values")
+        val_trend_values = v3.multiselect("验证趋势过滤", [False, True], default=[False, True], format_func=lambda x: "开启" if x else "关闭", key="val_trend_values")
+        val_stop_values = v4.multiselect("验证止损候选", [None, 0.05, 0.08, 0.1], default=[None, 0.05, 0.08], format_func=lambda x: "无止损" if x is None else f"{x:.0%}", key="val_stop_values")
+        grid = _build_parameter_grid(val_short_values, val_long_values, val_trend_values, val_stop_values)
 
-        if st.button("运行训练 / 测试验证", use_container_width=True):
-            grid = {
-                "short_window": sorted(train_short_values),
-                "long_window": sorted(train_long_values),
-                "enable_trend_filter": train_trend_values,
-                "stop_loss_pct": train_stop_values,
-            }
-            with st.spinner("正在执行训练 / 测试验证..."):
-                validation_result, _, history_path = run_train_test_experiment(data_path, config, grid)
-            st.success(f"训练 / 测试验证完成，历史记录已保存到 {history_path.name}")
+        if mode == "训练 / 测试验证":
+            st.markdown("<div class='subtle-panel'>先在训练集上找参数，再把最佳参数放到测试集看样本外表现，适合快速做一次样本外检查。</div>", unsafe_allow_html=True)
+            if st.button("运行训练 / 测试验证", use_container_width=True):
+                with st.spinner("正在执行训练 / 测试验证..."):
+                    validation_result, _, history_path = run_train_test_experiment(data_path, config, grid)
+                st.success(f"训练 / 测试验证完成，历史记录已保存到 {history_path.name}")
 
-            overview = validation_result["overview"]
-            best_params = validation_result["best_params"]
-            st.markdown(
-                f"<div class='subtle-panel'><strong>训练集：</strong>{overview['train_start']} ~ {overview['train_end']}（{overview['train_rows']} 行）<br><strong>测试集：</strong>{overview['test_start']} ~ {overview['test_end']}（{overview['test_rows']} 行）<br><strong>训练集选出的最佳参数：</strong>{json.dumps(best_params, ensure_ascii=False)}</div>",
-                unsafe_allow_html=True,
-            )
+                overview = validation_result["overview"]
+                best_params = validation_result["best_params"]
+                st.markdown(
+                    f"<div class='subtle-panel'><strong>训练集：</strong>{overview['train_start']} ~ {overview['train_end']}（{overview['train_rows']} 行）<br><strong>测试集：</strong>{overview['test_start']} ~ {overview['test_end']}（{overview['test_rows']} 行）<br><strong>训练集选出的最佳参数：</strong>{json.dumps(best_params, ensure_ascii=False)}</div>",
+                    unsafe_allow_html=True,
+                )
 
-            st.markdown("<div class='section-title'>测试集表现</div>", unsafe_allow_html=True)
-            render_metric_cards(validation_result["test_result"].metrics)
+                st.markdown("<div class='section-title'>测试集表现</div>", unsafe_allow_html=True)
+                render_metric_cards(validation_result["test_result"].metrics)
 
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("#### 样本外最佳参数")
-                st.plotly_chart(build_equity_figure(validation_result["test_result"].equity_curve), use_container_width=True)
-            with c2:
-                st.markdown("#### 样本外基线参数")
-                st.plotly_chart(build_equity_figure(validation_result["baseline_test_result"].equity_curve), use_container_width=True)
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.markdown("#### 样本外最佳参数")
+                    st.plotly_chart(build_equity_figure(validation_result["test_result"].equity_curve), use_container_width=True)
+                with c2:
+                    st.markdown("#### 样本外基线参数")
+                    st.plotly_chart(build_equity_figure(validation_result["baseline_test_result"].equity_curve), use_container_width=True)
 
-            compare_df = pd.DataFrame([
-                {"方案": "训练选优参数", **validation_result["test_result"].metrics},
-                {"方案": "当前基线参数", **validation_result["baseline_test_result"].metrics},
-            ])
-            st.dataframe(compare_df, use_container_width=True, height=220)
-            st.markdown("<div class='section-title'>训练集参数扫描结果</div>", unsafe_allow_html=True)
-            st.dataframe(validation_result["train_summary"], use_container_width=True, height=260)
+                compare_df = pd.DataFrame([
+                    {"方案": "训练选优参数", **validation_result["test_result"].metrics},
+                    {"方案": "当前基线参数", **validation_result["baseline_test_result"].metrics},
+                ])
+                st.dataframe(compare_df, use_container_width=True, height=220)
+                st.markdown("<div class='section-title'>训练集参数扫描结果</div>", unsafe_allow_html=True)
+                st.dataframe(validation_result["train_summary"], use_container_width=True, height=260)
+        else:
+            st.markdown("<div class='subtle-panel'>Walk-forward 会按滚动窗口重复执行“训练选参 → 样本外验证”，更接近真实研究流程，也比单次 train/test 更抗过拟合。</div>", unsafe_allow_html=True)
+            if st.button("运行 Walk-forward 验证", use_container_width=True):
+                with st.spinner("正在执行 Walk-forward 验证..."):
+                    wf_result, _, history_path = run_walk_forward_experiment(data_path, config, grid)
+                st.success(f"Walk-forward 验证完成，共 {wf_result['overview']['fold_count']} 个窗口，历史记录已保存到 {history_path.name}")
+
+                avg = wf_result["average_metrics"]
+                render_metric_cards(
+                    {
+                        "total_return": avg.get("test_total_return", 0.0),
+                        "annual_return": avg.get("test_annual_return", 0.0),
+                        "max_drawdown": avg.get("test_max_drawdown", 0.0),
+                        "sharpe": avg.get("test_sharpe", 0.0),
+                        "excess_return": avg.get("baseline_test_annual_return", 0.0),
+                    },
+                    labels=[
+                        ("平均样本外收益", "total_return"),
+                        ("平均样本外年化", "annual_return"),
+                        ("平均最大回撤", "max_drawdown"),
+                        ("平均 Sharpe", "sharpe"),
+                        ("基线样本外年化", "excess_return"),
+                    ],
+                )
+
+                st.markdown(
+                    f"<div class='subtle-panel'><strong>全区间：</strong>{wf_result['overview']['start_date']} ~ {wf_result['overview']['end_date']}<br><strong>训练窗口：</strong>{wf_result['overview']['train_window']} 个交易日<br><strong>测试窗口：</strong>{wf_result['overview']['test_window']} 个交易日<br><strong>滚动步长：</strong>{wf_result['overview']['step_size']} 个交易日</div>",
+                    unsafe_allow_html=True,
+                )
+                st.plotly_chart(build_walk_forward_compare_figure(wf_result["fold_summary"]), use_container_width=True)
+                st.dataframe(wf_result["fold_summary"], use_container_width=True, height=320)
 
     with tab4:
         st.markdown("<div class='section-title'>实验历史</div>", unsafe_allow_html=True)
         history_df = get_experiment_history(config)
         if history_df.empty:
-            st.info("当前还没有历史实验记录。先运行一次回测、参数实验或训练测试验证，这里就会出现记录。")
+            st.info("当前还没有历史实验记录。先运行一次回测、参数实验、训练测试验证或 walk-forward 验证，这里就会出现记录。")
         else:
-            st.dataframe(history_df, use_container_width=True, height=360)
-            history_csv = history_df.to_csv(index=False).encode("utf-8-sig")
+            filter_col1, filter_col2, filter_col3 = st.columns(3)
+            experiment_types = sorted(history_df["experiment_type"].dropna().unique().tolist())
+            selected_types = filter_col1.multiselect("实验类型筛选", experiment_types, default=experiment_types)
+            metric_options = [col for col in [
+                "annual_return",
+                "test_annual_return",
+                "average_test_annual_return",
+                "sharpe",
+                "test_sharpe",
+                "average_test_sharpe",
+            ] if col in history_df.columns]
+            selected_metric = filter_col2.selectbox("历史指标对比图", metric_options, index=0 if metric_options else None)
+            keyword = filter_col3.text_input("关键词筛选（ID / 备注）")
+
+            filtered_df = history_df.copy()
+            if selected_types:
+                filtered_df = filtered_df[filtered_df["experiment_type"].isin(selected_types)]
+            if keyword:
+                keyword_lower = keyword.lower()
+                filtered_df = filtered_df[
+                    filtered_df["experiment_id"].astype(str).str.lower().str.contains(keyword_lower)
+                    | filtered_df["notes"].astype(str).str.lower().str.contains(keyword_lower)
+                ]
+
+            st.dataframe(filtered_df, use_container_width=True, height=280)
+
+            if selected_metric:
+                st.plotly_chart(build_history_metric_compare_figure(filtered_df, selected_metric), use_container_width=True)
+
+            detail_options = filtered_df["experiment_id"].tolist()
+            selected_experiment_id = st.selectbox("点开看详情", detail_options, index=0 if detail_options else None)
+            if selected_experiment_id:
+                detail = get_experiment_detail(selected_experiment_id, config)
+                _render_history_detail(detail)
+
+            history_csv = filtered_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button("下载实验历史", history_csv, file_name="experiment_history.csv", use_container_width=True)
 
 
