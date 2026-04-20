@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from quantlab.backtest.engine import format_metrics
 from quantlab.config import BacktestConfig
 from quantlab.pipeline import run_single_backtest
-from quantlab.backtest.engine import format_metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,12 +35,14 @@ def main() -> None:
         max_volatility=args.max_volatility,
     )
 
-    result, data_summary, _ = run_single_backtest(data_path, config)
+    result, data_summary, _, history_path = run_single_backtest(data_path, config)
     print(format_metrics(result.metrics))
     print(f"\n数据区间: {data_summary['start_date']} ~ {data_summary['end_date']}")
     print(f"数据行数: {data_summary['rows']}")
+    print(f"历史记录: {history_path}")
     print(f"\n结果目录: {config.report_dir}")
 
 
 if __name__ == "__main__":
     main()
+

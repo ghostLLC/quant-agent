@@ -18,11 +18,19 @@ from quantlab.pipeline import (
 )
 from quantlab.visualization.charts import (
     build_equity_figure,
+    build_experiment_compare_figure,
     build_grid_scatter,
     build_history_metric_compare_figure,
+    build_history_scatter_figure,
+    build_parameter_regime_figure,
     build_price_signal_figure,
+    build_research_score_radar_figure,
+    build_stability_rank_figure,
     build_walk_forward_compare_figure,
+    build_walk_forward_detail_figure,
 )
+
+
 
 st.set_page_config(page_title="量化研究面板", page_icon="📈", layout="wide")
 
@@ -74,6 +82,23 @@ st.markdown(
         background: rgba(255,255,255,0.72);
         border: 1px solid rgba(148,163,184,0.15);
         margin-bottom: 0.8rem;
+    }
+    .detail-card {
+        padding: 0.95rem 1rem;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.72);
+        border: 1px solid rgba(148,163,184,0.16);
+        min-height: 120px;
+    }
+    .detail-kicker {
+        color: #64748b;
+        font-size: 0.85rem;
+        margin-bottom: 0.35rem;
+    }
+    .detail-value {
+        color: #0f172a;
+        font-size: 1.4rem;
+        font-weight: 800;
     }
     </style>
     """,
@@ -170,10 +195,47 @@ def _build_parameter_grid(short_values, long_values, trend_values, stop_values) 
     }
 
 
+def _format_metric_value(metric_key: str, value) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+    if isinstance(value, (int, float)):
+        if "sharpe" in metric_key.lower():
+            return f"{value:.2f}"
+        return f"{value:.2%}"
+    return str(value)
+
+
+def _render_detail_summary(detail: dict) -> None:
+    metrics = detail.get("metrics", {})
+    notes = detail.get("notes", {})
+    overview = notes.get("overview", {}) if isinstance(notes, dict) else {}
+    stability_summary = notes.get("stability_summary", {}) if isinstance(notes, dict) else {}
+    cards = [
+        ("实验类型", detail.get("experiment_type", "—")),
+        ("主指标", _format_metric_value("primary_metric", metrics.get("annual_return") or metrics.get("test_annual_return") or metrics.get("average_test_annual_return"))),
+        ("窗口数量", overview.get("fold_count", "—")),
+        ("记录时间", detail.get("timestamp", "—")),
+    ]
+    if stability_summary:
+        cards.extend([
+            ("稳定性评分", _format_metric_value("stability_score", stability_summary.get("stability_score"))),
+            ("稳定性标签", stability_summary.get("stability_label", "—")),
+        ])
+    cols = st.columns(len(cards))
+    for col, (title, value) in zip(cols, cards):
+        col.markdown(
+            f"<div class='detail-card'><div class='detail-kicker'>{title}</div><div class='detail-value'>{value}</div></div>",
+            unsafe_allow_html=True,
+        )
+
+
+
 def _render_history_detail(detail: dict | None) -> None:
     if not detail:
         st.info("未找到对应历史详情。")
         return
+
+    _render_detail_summary(detail)
 
     c1, c2 = st.columns(2)
     with c1:
@@ -183,8 +245,34 @@ def _render_history_detail(detail: dict | None) -> None:
         st.markdown("#### 指标快照")
         st.json(detail.get("metrics", {}), expanded=False)
 
+    notes = detail.get("notes", {})
+    if isinstance(notes, dict):
+        stability_summary = notes.get("stability_summary", {})
+        research_summary = notes.get("research_summary", {})
+        regime_evolution = notes.get("regime_evolution", [])
+
+        if stability_summary or research_summary:
+            st.markdown("#### 稳定性 / 研究评分回看")
+            review_col1, review_col2 = st.columns(2)
+            with review_col1:
+                st.plotly_chart(build_research_score_radar_figure(stability_summary, research_summary), use_container_width=True)
+            with review_col2:
+                regime_df = pd.DataFrame(regime_evolution) if regime_evolution else pd.DataFrame()
+                st.plotly_chart(build_parameter_regime_figure(regime_df), use_container_width=True)
+
+        if isinstance(notes.get("fold_summary"), list) and notes["fold_summary"]:
+            fold_summary_df = pd.DataFrame(notes["fold_summary"])
+            st.markdown("#### Walk-forward 明细")
+            wf_col1, wf_col2 = st.columns(2)
+            with wf_col1:
+                st.plotly_chart(build_walk_forward_compare_figure(fold_summary_df), use_container_width=True)
+            with wf_col2:
+                st.plotly_chart(build_walk_forward_detail_figure(fold_summary_df), use_container_width=True)
+            st.dataframe(fold_summary_df, use_container_width=True, height=260)
+
     st.markdown("#### 备注 / 扩展信息")
-    st.json(detail.get("notes", {}), expanded=True)
+    st.json(notes, expanded=True)
+
 
 
 def main() -> None:
@@ -319,6 +407,8 @@ def main() -> None:
                 st.success(f"Walk-forward 验证完成，共 {wf_result['overview']['fold_count']} 个窗口，历史记录已保存到 {history_path.name}")
 
                 avg = wf_result["average_metrics"]
+                stability_summary = wf_result.get("stability_summary", {})
+                research_summary = wf_result.get("research_summary", {})
                 render_metric_cards(
                     {
                         "total_return": avg.get("test_total_return", 0.0),
@@ -340,8 +430,41 @@ def main() -> None:
                     f"<div class='subtle-panel'><strong>全区间：</strong>{wf_result['overview']['start_date']} ~ {wf_result['overview']['end_date']}<br><strong>训练窗口：</strong>{wf_result['overview']['train_window']} 个交易日<br><strong>测试窗口：</strong>{wf_result['overview']['test_window']} 个交易日<br><strong>滚动步长：</strong>{wf_result['overview']['step_size']} 个交易日</div>",
                     unsafe_allow_html=True,
                 )
-                st.plotly_chart(build_walk_forward_compare_figure(wf_result["fold_summary"]), use_container_width=True)
-                st.dataframe(wf_result["fold_summary"], use_container_width=True, height=320)
+
+                st.markdown("<div class='section-title'>稳定性 / 研究评分摘要</div>", unsafe_allow_html=True)
+                summary_cols = st.columns(6)
+                summary_cols[0].metric("稳定性评分", _format_metric_value("stability_score", stability_summary.get("stability_score")))
+                summary_cols[1].metric("稳定性标签", stability_summary.get("stability_label", "—"))
+                summary_cols[2].metric("研究总分", _format_metric_value("research_score", research_summary.get("research_score")))
+                summary_cols[3].metric("研究标签", research_summary.get("research_label", "—"))
+                summary_cols[4].metric("正收益窗口占比", _format_metric_value("positive_test_ratio", stability_summary.get("positive_test_ratio")))
+                summary_cols[5].metric("跑赢基线占比", _format_metric_value("beat_baseline_ratio", stability_summary.get("beat_baseline_ratio")))
+
+                wf_col1, wf_col2 = st.columns(2)
+                with wf_col1:
+                    st.plotly_chart(build_walk_forward_compare_figure(wf_result["fold_summary"]), use_container_width=True)
+                with wf_col2:
+                    st.plotly_chart(build_walk_forward_detail_figure(wf_result["fold_summary"]), use_container_width=True)
+
+                score_col1, score_col2 = st.columns(2)
+                with score_col1:
+                    st.plotly_chart(build_research_score_radar_figure(stability_summary, research_summary), use_container_width=True)
+                with score_col2:
+                    regime_df = wf_result.get("regime_evolution", pd.DataFrame())
+                    st.plotly_chart(build_parameter_regime_figure(regime_df), use_container_width=True)
+
+                component_df = pd.DataFrame([
+                    {"维度": "稳定性评分", "数值": stability_summary.get("stability_score", 0.0)},
+                    {"维度": "研究总分", "数值": research_summary.get("research_score", 0.0)},
+                    {"维度": "参数一致性", "数值": stability_summary.get("dominant_parameter_ratio", 0.0)},
+                    {"维度": "超额年化", "数值": research_summary.get("excess_annual_return", 0.0)},
+                ])
+                detail_col1, detail_col2 = st.columns([1.2, 1])
+                with detail_col1:
+                    st.dataframe(wf_result["fold_summary"], use_container_width=True, height=320)
+                with detail_col2:
+                    st.dataframe(component_df, use_container_width=True, height=320)
+
 
     with tab4:
         st.markdown("<div class='section-title'>实验历史</div>", unsafe_allow_html=True)
@@ -349,7 +472,7 @@ def main() -> None:
         if history_df.empty:
             st.info("当前还没有历史实验记录。先运行一次回测、参数实验、训练测试验证或 walk-forward 验证，这里就会出现记录。")
         else:
-            filter_col1, filter_col2, filter_col3 = st.columns(3)
+            filter_col1, filter_col2, filter_col3, filter_col4, filter_col5 = st.columns(5)
             experiment_types = sorted(history_df["experiment_type"].dropna().unique().tolist())
             selected_types = filter_col1.multiselect("实验类型筛选", experiment_types, default=experiment_types)
             metric_options = [col for col in [
@@ -359,13 +482,29 @@ def main() -> None:
                 "sharpe",
                 "test_sharpe",
                 "average_test_sharpe",
+                "primary_metric",
+                "stability_score",
+                "research_score",
+                "positive_test_ratio",
+                "beat_baseline_ratio",
+                "dominant_parameter_ratio",
+                "excess_annual_return",
             ] if col in history_df.columns]
             selected_metric = filter_col2.selectbox("历史指标对比图", metric_options, index=0 if metric_options else None)
             keyword = filter_col3.text_input("关键词筛选（ID / 备注）")
+            stability_labels = sorted(history_df["stability_label"].dropna().unique().tolist()) if "stability_label" in history_df.columns else []
+            selected_labels = filter_col4.multiselect("稳定性标签", stability_labels, default=stability_labels)
+            research_labels = sorted(history_df["research_label"].dropna().unique().tolist()) if "research_label" in history_df.columns else []
+            selected_research_labels = filter_col5.multiselect("研究标签", research_labels, default=research_labels)
 
             filtered_df = history_df.copy()
             if selected_types:
                 filtered_df = filtered_df[filtered_df["experiment_type"].isin(selected_types)]
+            if selected_labels and "stability_label" in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df["stability_label"].isin(selected_labels)]
+            if selected_research_labels and "research_label" in filtered_df.columns:
+                filtered_df = filtered_df[filtered_df["research_label"].isin(selected_research_labels)]
+
             if keyword:
                 keyword_lower = keyword.lower()
                 filtered_df = filtered_df[
@@ -373,20 +512,123 @@ def main() -> None:
                     | filtered_df["notes"].astype(str).str.lower().str.contains(keyword_lower)
                 ]
 
-            st.dataframe(filtered_df, use_container_width=True, height=280)
+            if "stability_score" in filtered_df.columns and filtered_df["stability_score"].notna().any():
+                score_min = float(filtered_df["stability_score"].dropna().min())
+                score_max = float(filtered_df["stability_score"].dropna().max())
+                selected_range = st.slider(
+                    "稳定性评分区间",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=(max(0.0, score_min), min(1.0, score_max)),
+                    step=0.01,
+                )
+                filtered_df = filtered_df[
+                    filtered_df["stability_score"].isna()
+                    | filtered_df["stability_score"].between(selected_range[0], selected_range[1])
+                ]
 
-            if selected_metric:
-                st.plotly_chart(build_history_metric_compare_figure(filtered_df, selected_metric), use_container_width=True)
+            history_summary_cols = st.columns(6)
+            history_summary_cols[0].metric("筛选后实验数", len(filtered_df))
+            if "experiment_type" in filtered_df.columns:
+                history_summary_cols[1].metric("实验类型数", filtered_df["experiment_type"].nunique())
+            if "fold_count" in filtered_df.columns and filtered_df["fold_count"].notna().any():
+                history_summary_cols[2].metric("最大窗口数", int(filtered_df["fold_count"].fillna(0).max()))
+            if selected_metric and selected_metric in filtered_df.columns and filtered_df[selected_metric].notna().any():
+                history_summary_cols[3].metric("当前指标均值", _format_metric_value(selected_metric, float(filtered_df[selected_metric].dropna().mean())))
+            if "stability_score" in filtered_df.columns and filtered_df["stability_score"].notna().any():
+                history_summary_cols[4].metric("平均稳定性", _format_metric_value("stability_score", float(filtered_df["stability_score"].dropna().mean())))
+            if "research_score" in filtered_df.columns and filtered_df["research_score"].notna().any():
+                history_summary_cols[5].metric("平均研究总分", _format_metric_value("research_score", float(filtered_df["research_score"].dropna().mean())))
 
-            detail_options = filtered_df["experiment_id"].tolist()
-            selected_experiment_id = st.selectbox("点开看详情", detail_options, index=0 if detail_options else None)
-            if selected_experiment_id:
-                detail = get_experiment_detail(selected_experiment_id, config)
-                _render_history_detail(detail)
+            review_tab, compare_tab, detail_tab = st.tabs(["历史总览", "实验评审", "详情回看"])
+
+            with review_tab:
+                sort_columns = [col for col in ["timestamp", "primary_metric", "average_test_annual_return", "stability_score", "research_score", "fold_count"] if col in filtered_df.columns]
+                default_sort_idx = sort_columns.index("timestamp") if "timestamp" in sort_columns else 0
+                sort_col1, sort_col2 = st.columns([1, 1])
+                sort_by = sort_col1.selectbox("排序字段", sort_columns, index=default_sort_idx if sort_columns else None)
+                sort_desc = sort_col2.toggle("按降序排序", value=True)
+                review_df = filtered_df.sort_values(sort_by, ascending=not sort_desc) if sort_by else filtered_df
+                st.dataframe(review_df, use_container_width=True, height=320)
+
+                if selected_metric:
+                    st.plotly_chart(build_history_metric_compare_figure(review_df, selected_metric), use_container_width=True)
+
+                scatter_metric_candidates = [col for col in metric_options if col in review_df.columns]
+                if len(scatter_metric_candidates) >= 2:
+                    scatter_col1, scatter_col2 = st.columns(2)
+                    scatter_x = scatter_col1.selectbox("双指标对比 X 轴", scatter_metric_candidates, index=0, key="scatter_x")
+                    scatter_y_default = 1 if len(scatter_metric_candidates) > 1 else 0
+                    scatter_y = scatter_col2.selectbox("双指标对比 Y 轴", scatter_metric_candidates, index=scatter_y_default, key="scatter_y")
+                    st.plotly_chart(build_history_scatter_figure(review_df, scatter_x, scatter_y), use_container_width=True)
+
+            with compare_tab:
+                st.markdown("<div class='subtle-panel'>这一层用于快速做实验评审：先看稳定性排行，再看研究总分，再把候选实验拉出来做并排指标比较。</div>", unsafe_allow_html=True)
+                rank_col1, rank_col2 = st.columns(2)
+                with rank_col1:
+                    if "stability_score" in filtered_df.columns and filtered_df["stability_score"].notna().any():
+                        st.plotly_chart(build_stability_rank_figure(filtered_df), use_container_width=True)
+                    else:
+                        st.info("当前筛选结果里还没有可用于排行的稳定性评分，先运行 walk-forward 验证会更有参考价值。")
+                with rank_col2:
+                    if "research_score" in filtered_df.columns and filtered_df["research_score"].notna().any():
+                        research_rank_df = filtered_df.dropna(subset=["research_score"]).sort_values("research_score", ascending=False).head(12)
+                        st.dataframe(
+                            research_rank_df[[col for col in ["experiment_id", "experiment_type", "research_score", "research_label", "stability_score", "average_test_annual_return"] if col in research_rank_df.columns]],
+                            use_container_width=True,
+                            height=420,
+                        )
+                    else:
+                        st.info("当前筛选结果里还没有研究总分，运行新版 walk-forward 后这里会显示研究排序。")
+
+                compare_options = filtered_df["experiment_id"].tolist()
+                default_compare = compare_options[: min(4, len(compare_options))]
+                selected_compare_ids = st.multiselect("选择要并排评审的实验", compare_options, default=default_compare)
+                compare_metric_candidates = [col for col in [
+                    "primary_metric",
+                    "annual_return",
+                    "test_annual_return",
+                    "average_test_annual_return",
+                    "sharpe",
+                    "test_sharpe",
+                    "average_test_sharpe",
+                    "stability_score",
+                    "research_score",
+                    "positive_test_ratio",
+                    "beat_baseline_ratio",
+                    "dominant_parameter_ratio",
+                    "excess_annual_return",
+                ] if col in filtered_df.columns]
+                selected_compare_metrics = st.multiselect(
+                    "评审指标",
+                    compare_metric_candidates,
+                    default=compare_metric_candidates[: min(5, len(compare_metric_candidates))],
+                )
+
+                if selected_compare_ids and selected_compare_metrics:
+                    compare_df = filtered_df[filtered_df["experiment_id"].isin(selected_compare_ids)].copy()
+                    st.plotly_chart(build_experiment_compare_figure(compare_df, selected_compare_metrics), use_container_width=True)
+                    st.dataframe(
+                        compare_df[[col for col in ["experiment_id", "experiment_type", "timestamp", "stability_label", "research_label", *selected_compare_metrics] if col in compare_df.columns]],
+                        use_container_width=True,
+                        height=260,
+                    )
+                else:
+                    st.info("至少选中 1 个实验和 1 个评审指标，才能生成并排评审图。")
+
+
+            with detail_tab:
+                detail_options = filtered_df["experiment_id"].tolist()
+                selected_experiment_id = st.selectbox("点开看详情", detail_options, index=0 if detail_options else None)
+                if selected_experiment_id:
+                    detail = get_experiment_detail(selected_experiment_id, config)
+                    _render_history_detail(detail)
 
             history_csv = filtered_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button("下载实验历史", history_csv, file_name="experiment_history.csv", use_container_width=True)
 
 
+
 if __name__ == "__main__":
     main()
+

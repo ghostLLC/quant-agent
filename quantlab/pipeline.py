@@ -96,6 +96,8 @@ def run_walk_forward_experiment(data_path: str | Path = DEFAULT_DATA_PATH, confi
     price_df = load_price_data(data_path)
     walk_forward_result = run_walk_forward_validation(price_df, config, parameter_grid, run_long_only_backtest)
     overview = summarize_data(price_df)
+    stability_summary = walk_forward_result["stability_summary"]
+    research_summary = walk_forward_result["research_summary"]
 
     history_path = save_experiment_record(
         experiment_type="walk_forward_validation",
@@ -107,13 +109,23 @@ def run_walk_forward_experiment(data_path: str | Path = DEFAULT_DATA_PATH, confi
             "average_test_max_drawdown": walk_forward_result["average_metrics"].get("test_max_drawdown", 0.0),
             "average_baseline_test_annual_return": walk_forward_result["average_metrics"].get("baseline_test_annual_return", 0.0),
             "average_baseline_test_sharpe": walk_forward_result["average_metrics"].get("baseline_test_sharpe", 0.0),
+            "stability_score": stability_summary.get("stability_score", 0.0),
+            "positive_test_ratio": stability_summary.get("positive_test_ratio", 0.0),
+            "beat_baseline_ratio": stability_summary.get("beat_baseline_ratio", 0.0),
+            "dominant_parameter_ratio": stability_summary.get("dominant_parameter_ratio", 0.0),
+            "research_score": research_summary.get("research_score", 0.0),
+            "excess_annual_return": research_summary.get("excess_annual_return", 0.0),
         },
         notes={
             "overview": walk_forward_result["overview"],
+            "stability_summary": stability_summary,
+            "research_summary": research_summary,
+            "regime_evolution": walk_forward_result["regime_evolution"].to_dict(orient="records"),
             "fold_summary": walk_forward_result["fold_summary"].to_dict(orient="records"),
         },
         history_dir=config.history_dir,
     )
+
     return walk_forward_result, overview, history_path
 
 
@@ -130,3 +142,4 @@ def get_experiment_history(config: BacktestConfig | None = None) -> pd.DataFrame
 def get_experiment_detail(experiment_id: str, config: BacktestConfig | None = None) -> dict | None:
     config = config or BacktestConfig()
     return load_experiment_detail(experiment_id, config.history_dir)
+

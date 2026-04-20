@@ -61,6 +61,8 @@ def load_experiment_history(history_dir: str | Path = HISTORY_REPORT_DIR) -> pd.
         record = json.loads(file.read_text(encoding="utf-8"))
         metrics = record.get("metrics", {})
         notes = record.get("notes", {})
+        stability_summary = notes.get("stability_summary", {}) if isinstance(notes, dict) else {}
+        research_summary = notes.get("research_summary", {}) if isinstance(notes, dict) else {}
         row = {
             "experiment_id": record.get("experiment_id"),
             "timestamp": record.get("timestamp"),
@@ -70,9 +72,14 @@ def load_experiment_history(history_dir: str | Path = HISTORY_REPORT_DIR) -> pd.
             or metrics.get("test_annual_return")
             or metrics.get("average_test_annual_return")
             or metrics.get("train_annual_return"),
+            "stability_score": metrics.get("stability_score"),
+            "stability_label": stability_summary.get("stability_label"),
+            "research_score": metrics.get("research_score"),
+            "research_label": research_summary.get("research_label"),
             **metrics,
             "notes": json.dumps(notes, ensure_ascii=False),
         }
+
         rows.append(row)
 
     if not rows:
@@ -90,3 +97,4 @@ def load_experiment_detail(experiment_id: str, history_dir: str | Path = HISTORY
     if not target.exists():
         return None
     return json.loads(target.read_text(encoding="utf-8"))
+

@@ -50,6 +50,131 @@ def _validate_walk_forward_windows(price_df: pd.DataFrame, config: BacktestConfi
         raise ValueError(f"数据长度不足以执行 walk-forward，需要至少 {min_required} 行")
 
 
+def _bounded_score(value: float, upper_bound: float) -> float:
+    if upper_bound <= 0:
+        return 0.0
+    normalized = max(0.0, min(1.0, value / upper_bound))
+    return round(1 - normalized, 4)
+
+
+def summarize_walk_forward_stability(fold_summary: pd.DataFrame) -> dict:
+    if fold_summary.empty:
+        return {
+            "stability_score": 0.0,
+            "stability_label": "暂无样本",
+            "positive_test_ratio": 0.0,
+            "beat_baseline_ratio": 0.0,
+            "test_annual_return_std": 0.0,
+            "test_max_drawdown_std": 0.0,
+            "parameter_regime_count": 0,
+            "dominant_parameter_ratio": 0.0,
+        }
+
+    positive_test_ratio = float((fold_summary["test_annual_return"] > 0).mean())
+    beat_baseline_ratio = float((fold_summary["test_annual_return"] > fold_summary["baseline_test_annual_return"]).mean())
+    test_annual_return_std = float(fold_summary["test_annual_return"].std(ddof=0) or 0.0)
+    test_max_drawdown_std = float(fold_summary["test_max_drawdown"].std(ddof=0) or 0.0)
+
+    parameter_columns = [
+        col for col in ["short_window", "long_window", "enable_trend_filter", "stop_loss_pct"]
+        if col in fold_summary.columns
+    ]
+    if parameter_columns:
+        regime_counts = fold_summary[parameter_columns].astype(str).agg("|".join, axis=1).value_counts()
+        parameter_regime_count = int(regime_counts.shape[0])
+        dominant_parameter_ratio = float(regime_counts.iloc[0] / len(fold_summary))
+    else:
+        parameter_regime_count = 0
+        dominant_parameter_ratio = 0.0
+
+    score_components = {
+        "positive_test_ratio": positive_test_ratio,
+        "beat_baseline_ratio": beat_baseline_ratio,
+        "return_stability": _bounded_score(test_annual_return_std, 0.30),
+        "drawdown_stability": _bounded_score(abs(test_max_drawdown_std), 0.20),
+        "parameter_consistency": dominant_parameter_ratio,
+    }
+    stability_score = round(
+        score_components["positive_test_ratio"] * 0.28
+        + score_components["beat_baseline_ratio"] * 0.28
+        + score_components["return_stability"] * 0.18
+        + score_components["drawdown_stability"] * 0.14
+        + score_components["parameter_consistency"] * 0.12,
+        4,
+    )
+
+    if stability_score >= 0.75:
+        stability_label = "稳定性强"
+    elif stability_score >= 0.55:
+        stability_label = "稳定性中等"
+    else:
+        stability_label = "稳定性偏弱"
+
+    return {
+        "stability_score": stability_score,
+        "stability_label": stability_label,
+        "positive_test_ratio": round(positive_test_ratio, 4),
+        "beat_baseline_ratio": round(beat_baseline_ratio, 4),
+        "test_annual_return_std": round(test_annual_return_std, 4),
+        "test_max_drawdown_std": round(test_max_drawdown_std, 4),
+        "parameter_regime_count": parameter_regime_count,
+        "dominant_parameter_ratio": round(dominant_parameter_ratio, 4),
+        "score_components": score_components,
+    }
+
+
+def summarize_walk_forward_research_score(fold_summary: pd.DataFrame, average_metrics: dict, stability_summary: dict) -> dict:
+    if fold_summary.empty:
+        return {
+            "research_score": 0.0,
+            "research_label": "暂无样本",
+            "score_components": {},
+        }
+
+    avg_test_annual_return = float(average_metrics.get("test_annual_return", 0.0))
+    avg_test_sharpe = float(average_metrics.get("test_sharpe", 0.0))
+    avg_test_max_drawdown = abs(float(average_metrics.get("test_max_drawdown", 0.0)))
+    baseline_annual_return = float(average_metrics.get("baseline_test_annual_return", 0.0))
+    excess_annual_return = avg_test_annual_return - baseline_annual_return
+
+    score_components = {
+        "return_quality": round(max(0.0, min(1.0, avg_test_annual_return / 0.25)), 4),
+        "sharpe_quality": round(max(0.0, min(1.0, avg_test_sharpe / 1.5)), 4),
+        "drawdown_quality": _bounded_score(avg_test_max_drawdown, 0.25),
+        "excess_quality": round(max(0.0, min(1.0, excess_annual_return / 0.15)), 4),
+        "stability_quality": float(stability_summary.get("stability_score", 0.0)),
+    }
+    research_score = round(
+        score_components["return_quality"] * 0.30
+        + score_components["sharpe_quality"] * 0.22
+        + score_components["drawdown_quality"] * 0.16
+        + score_components["excess_quality"] * 0.12
+        + score_components["stability_quality"] * 0.20,
+        4,
+    )
+
+    if research_score >= 0.78:
+        research_label = "研究质量强"
+    elif research_score >= 0.58:
+        research_label = "研究质量中等"
+    else:
+        research_label = "研究质量偏弱"
+
+    return {
+        "research_score": research_score,
+        "research_label": research_label,
+        "avg_test_annual_return": round(avg_test_annual_return, 4),
+        "avg_test_sharpe": round(avg_test_sharpe, 4),
+        "avg_test_max_drawdown": round(avg_test_max_drawdown, 4),
+        "avg_baseline_test_annual_return": round(baseline_annual_return, 4),
+        "excess_annual_return": round(excess_annual_return, 4),
+        "score_components": score_components,
+    }
+
+
+
+
+
 def run_train_test_validation(
     price_df: pd.DataFrame,
     base_config: BacktestConfig,
@@ -81,6 +206,7 @@ def run_train_test_validation(
         "test_result": test_result,
         "baseline_test_result": baseline_test_result,
     }
+
 
 
 def run_walk_forward_validation(
@@ -189,8 +315,21 @@ def run_walk_forward_validation(
         for key in metric_columns
         if key in fold_summary.columns
     }
+    stability_summary = summarize_walk_forward_stability(fold_summary)
+    research_summary = summarize_walk_forward_research_score(fold_summary, average_metrics, stability_summary)
+
+    parameter_columns = [
+        col for col in ["short_window", "long_window", "enable_trend_filter", "stop_loss_pct"]
+        if col in fold_summary.columns
+    ]
+    if parameter_columns:
+        regime_evolution = fold_summary[["fold_id", *parameter_columns]].copy()
+        regime_evolution["parameter_regime"] = regime_evolution[parameter_columns].astype(str).agg(" | ".join, axis=1)
+    else:
+        regime_evolution = pd.DataFrame(columns=["fold_id", "parameter_regime"])
 
     overview = {
+
         "fold_count": int(len(folds)),
         "train_window": int(train_window),
         "test_window": int(test_window),
@@ -204,6 +343,11 @@ def run_walk_forward_validation(
         "fold_summary": fold_summary,
         "folds": folds,
         "average_metrics": average_metrics,
+        "stability_summary": stability_summary,
+        "research_summary": research_summary,
+        "regime_evolution": regime_evolution,
         "walk_forward_equity": walk_forward_equity,
         "baseline_walk_forward_equity": baseline_walk_forward_equity,
     }
+
+
