@@ -1,0 +1,66 @@
+{
+  "experiment_id": "20260420_134224_22e76f72",
+  "timestamp": "2026-04-20 13:42:24",
+  "experiment_type": "train_test_validation",
+  "config": {
+    "initial_capital": 100000.0,
+    "commission_rate": 0.0003,
+    "slippage_rate": 0.0002,
+    "short_window": 5,
+    "long_window": 20,
+    "benchmark_symbol": "510300",
+    "trading_days_per_year": 252,
+    "stop_loss_pct": null,
+    "min_holding_days": 0,
+    "enable_trend_filter": false,
+    "trend_window": 60,
+    "enable_volatility_filter": false,
+    "volatility_window": 20,
+    "max_volatility": null,
+    "train_ratio": 0.7,
+    "report_dir": "D:\\quant-project\\reports\\latest",
+    "history_dir": "D:\\quant-project\\reports\\history",
+    "parameter_grid": {
+      "short_window": [
+        5,
+        10
+      ],
+      "long_window": [
+        20,
+        30
+      ],
+      "enable_trend_filter": [
+        false,
+        true
+      ],
+      "stop_loss_pct": [
+        null,
+        0.05
+      ]
+    }
+  },
+  "metrics": {
+    "train_annual_return": 0.063,
+    "test_annual_return": 0.0136,
+    "test_sharpe": 0.1716,
+    "test_max_drawdown": -0.1774,
+    "baseline_test_annual_return": 0.0087,
+    "baseline_test_sharpe": 0.1315
+  },
+  "notes": {
+    "overview": {
+      "train_rows": 2362,
+      "test_rows": 1013,
+      "train_start": "2012-05-28",
+      "train_end": "2022-02-11",
+      "test_start": "2022-02-14",
+      "test_end": "2026-04-17"
+    },
+    "best_params": {
+      "short_window": 10,
+      "long_window": 30,
+      "enable_trend_filter": false,
+      "stop_loss_pct": NaN
+    }
+  }
+}
