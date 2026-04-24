@@ -1,0 +1,281 @@
+[
+  {
+    "chunk_id": "README_md_1",
+    "source": "README.md",
+    "title": "量化研究面板知识库",
+    "content": "# 量化研究面板知识库",
+    "tokens": [
+      "量化研究面板知识库"
+    ]
+  },
+  {
+    "chunk_id": "README_md_2",
+    "source": "README.md",
+    "title": "项目定位",
+    "content": "## 项目定位\n这是一个围绕沪深300 ETF（510300）构建的量化研究面板，适合新手理解从数据更新、单次回测、参数扫描到训练/测试验证与 Walk-forward 稳健性评估的完整流程。",
+    "tokens": [
+      "510300",
+      "etf",
+      "forward",
+      "walk",
+      "单次回测",
+      "参数扫描到训练",
+      "构建的量化研究面板",
+      "测试验证与",
+      "稳健性评估的完整流程",
+      "这是一个围绕沪深300",
+      "适合新手理解从数据更新",
+      "项目定位"
+    ]
+  },
+  {
+    "chunk_id": "README_md_3",
+    "source": "README.md",
+    "title": "面板功能说明",
+    "content": "## 面板功能说明",
+    "tokens": [
+      "面板功能说明"
+    ]
+  },
+  {
+    "chunk_id": "README_md_4",
+    "source": "README.md",
+    "title": "1. 单次回测",
+    "content": "### 1. 单次回测\n适合快速验证当前参数组合。用户会看到核心收益指标、净值曲线、价格信号图和交易记录。",
+    "tokens": [
+      "价格信号图和交易记录",
+      "净值曲线",
+      "单次回测",
+      "用户会看到核心收益指标",
+      "适合快速验证当前参数组合"
+    ]
+  },
+  {
+    "chunk_id": "README_md_5",
+    "source": "README.md",
+    "title": "2. 参数对比实验",
+    "content": "### 2. 参数对比实验\n适合一次性比较多组参数。重点看 annual_return、sharpe、max_drawdown 的组合，而不是只看单一收益。",
+    "tokens": [
+      "annual_return",
+      "max_drawdown",
+      "sharpe",
+      "参数对比实验",
+      "的组合",
+      "而不是只看单一收益",
+      "适合一次性比较多组参数",
+      "重点看"
+    ]
+  },
+  {
+    "chunk_id": "README_md_6",
+    "source": "README.md",
+    "title": "3. 验证实验",
+    "content": "### 3. 验证实验\n- 训练 / 测试验证：先在训练集找最佳参数，再在测试集看样本外表现。\n- Walk-forward 验证：通过滚动窗口重复训练和测试，更接近真实研究流程，也更能暴露过拟合。",
+    "tokens": [
+      "forward",
+      "walk",
+      "也更能暴露过拟合",
+      "先在训练集找最佳参数",
+      "再在测试集看样本外表现",
+      "更接近真实研究流程",
+      "测试验证",
+      "训练",
+      "通过滚动窗口重复训练和测试",
+      "验证",
+      "验证实验"
+    ]
+  },
+  {
+    "chunk_id": "README_md_7",
+    "source": "README.md",
+    "title": "4. 实验历史",
+    "content": "### 4. 实验历史\n每次实验都会写入历史记录，可用于回看参数、指标、稳定性评分、研究评分和窗口细节。",
+    "tokens": [
+      "可用于回看参数",
+      "实验历史",
+      "指标",
+      "每次实验都会写入历史记录",
+      "研究评分和窗口细节",
+      "稳定性评分"
+    ]
+  },
+  {
+    "chunk_id": "README_md_8",
+    "source": "README.md",
+    "title": "新手教学原则",
+    "content": "## 新手教学原则\n1. 先解释按钮和页面作用，再建议执行。\n2. 涉及收益时，必须同时解释回撤、Sharpe、样本外表现和过拟合风险。\n3. 当用户要求“帮我操作”时，优先直接调用工具执行，而不是只让用户自己点按钮。\n4. 对 Walk-forward 结果，重点解释正收益窗口占比、跑赢基线占比、参数一致性和研究总分。",
+    "tokens": [
+      "forward",
+      "sharpe",
+      "walk",
+      "优先直接调用工具执行",
+      "先解释按钮和页面作用",
+      "再建议执行",
+      "参数一致性和研究总分",
+      "帮我操作",
+      "当用户要求",
+      "必须同时解释回撤",
+      "新手教学原则",
+      "样本外表现和过拟合风险",
+      "涉及收益时",
+      "结果",
+      "而不是只让用户自己点按钮",
+      "跑赢基线占比",
+      "重点解释正收益窗口占比"
+    ]
+  },
+  {
+    "chunk_id": "README_md_9",
+    "source": "README.md",
+    "title": "AI 助教能力边界",
+    "content": "## AI 助教能力边界\nAI 助教可以：\n- 查看当前面板配置\n- 更新数据\n- 运行单次回测\n- 运行参数对比实验\n- 运行训练/测试验证\n- 运行 Walk-forward 验证\n- 检索实验历史并展开详情\n\nAI 助教不能：\n- 替用户做确定性的投资承诺\n- 在没有证据的情况下宣称策略一定有效\n- 忽略样本外结果只谈收益",
+    "tokens": [
+      "ai",
+      "forward",
+      "walk",
+      "助教不能",
+      "助教可以",
+      "助教能力边界",
+      "在没有证据的情况下宣称策略一定有效",
+      "忽略样本外结果只谈收益",
+      "更新数据",
+      "替用户做确定性的投资承诺",
+      "查看当前面板配置",
+      "检索实验历史并展开详情",
+      "测试验证",
+      "运行",
+      "运行单次回测",
+      "运行参数对比实验",
+      "运行训练",
+      "验证"
+    ]
+  },
+  {
+    "chunk_id": "README_md_10",
+    "source": "README.md",
+    "title": "持久记忆策略",
+    "content": "## 持久记忆策略\n长对话时不保留全部原始上下文，而是依赖：\n- 最近若干轮消息\n- 会话摘要\n- 实验历史结构化记录\n- 本知识库片段检索\n这样可以避免上下文不断膨胀。",
+    "tokens": [
+      "会话摘要",
+      "实验历史结构化记录",
+      "持久记忆策略",
+      "最近若干轮消息",
+      "本知识库片段检索",
+      "而是依赖",
+      "这样可以避免上下文不断膨胀",
+      "长对话时不保留全部原始上下文"
+    ]
+  },
+  {
+    "chunk_id": "runtime_config_snapshot",
+    "source": "runtime",
+    "title": "当前面板配置",
+    "content": "当前面板配置快照：\n{\n  \"initial_capital\": 100000.0,\n  \"commission_rate\": 0.0003,\n  \"slippage_rate\": 0.0002,\n  \"short_window\": 5,\n  \"long_window\": 20,\n  \"benchmark_symbol\": \"510300\",\n  \"trading_days_per_year\": 252,\n  \"stop_loss_pct\": null,\n  \"min_holding_days\": 0,\n  \"enable_trend_filter\": false,\n  \"trend_window\": 60,\n  \"enable_volatility_filter\": false,\n  \"volatility_window\": 20,\n  \"max_volatility\": null,\n  \"train_ratio\": 0.7,\n  \"walk_forward_train_window\": 504,\n  \"walk_forward_test_window\": 126,\n  \"walk_forward_step_size\": 126,\n  \"report_dir\": \"D:\\\\quant-project\\\\reports\\\\latest\",\n  \"history_dir\": \"D:\\\\quant-project\\\\reports\\\\history\",\n  \"data_path\": \"D:\\\\quant-project\\\\data\\\\hs300_etf.csv\"\n}",
+    "tokens": [
+      "0002",
+      "0003",
+      "100000",
+      "126",
+      "20",
+      "252",
+      "504",
+      "510300",
+      "60",
+      "benchmark_symbol",
+      "commission_rate",
+      "csv",
+      "data",
+      "data_path",
+      "enable_trend_filter",
+      "enable_volatility_filter",
+      "false",
+      "history",
+      "history_dir",
+      "hs300_etf",
+      "initial_capital",
+      "latest",
+      "long_window",
+      "max_volatility",
+      "min_holding_days",
+      "null",
+      "project",
+      "quant",
+      "report_dir",
+      "reports",
+      "short_window",
+      "slippage_rate",
+      "stop_loss_pct",
+      "trading_days_per_year",
+      "train_ratio",
+      "trend_window",
+      "volatility_window",
+      "walk_forward_step_size",
+      "walk_forward_test_window",
+      "walk_forward_train_window",
+      "当前面板配置快照"
+    ]
+  },
+  {
+    "chunk_id": "history_20260421_115812_9efc1007",
+    "source": "history",
+    "title": "历史实验 20260421_115812_9efc1007",
+    "content": "最近实验摘要：\n{\n  \"experiment_id\": \"20260421_115812_9efc1007\",\n  \"timestamp\": \"2026-04-21 11:58:12\",\n  \"experiment_type\": \"single_backtest\",\n  \"primary_metric\": 0.0068,\n  \"stability_score\": null,\n  \"research_score\": null,\n  \"notes\": \"{\\\"data_path\\\": \\\"D:\\\\\\\\quant-project\\\\\\\\data\\\\\\\\hs300_etf.csv\\\"}\"\n}",
+    "tokens": [
+      "0068",
+      "04",
+      "11",
+      "12",
+      "2026",
+      "20260421_115812_9efc1007",
+      "21",
+      "58",
+      "csv",
+      "data",
+      "data_path",
+      "experiment_id",
+      "experiment_type",
+      "hs300_etf",
+      "notes",
+      "null",
+      "primary_metric",
+      "project",
+      "quant",
+      "research_score",
+      "single_backtest",
+      "stability_score",
+      "timestamp",
+      "最近实验摘要"
+    ]
+  },
+  {
+    "chunk_id": "history_20260420_153304_135d1980",
+    "source": "history",
+    "title": "历史实验 20260420_153304_135d1980",
+    "content": "最近实验摘要：\n{\n  \"experiment_id\": \"20260420_153304_135d1980\",\n  \"timestamp\": \"2026-04-20 15:33:04\",\n  \"experiment_type\": \"single_backtest\",\n  \"primary_metric\": 0.0064,\n  \"stability_score\": null,\n  \"research_score\": null,\n  \"notes\": \"{\\\"data_path\\\": \\\"D:\\\\\\\\quant-project\\\\\\\\data\\\\\\\\hs300_etf.csv\\\"}\"\n}",
+    "tokens": [
+      "0064",
+      "04",
+      "15",
+      "20",
+      "2026",
+      "20260420_153304_135d1980",
+      "33",
+      "csv",
+      "data",
+      "data_path",
+      "experiment_id",
+      "experiment_type",
+      "hs300_etf",
+      "notes",
+      "null",
+      "primary_metric",
+      "project",
+      "quant",
+      "research_score",
+      "single_backtest",
+      "stability_score",
+      "timestamp",
+      "最近实验摘要"
+    ]
+  }
+]

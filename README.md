@@ -1,209 +1,248 @@
-# 量化研究面板（沪深300 ETF）
+# Quant Agent — AI 驱动的量化因子发掘系统
 
-一个可直接落地使用的量化研究项目框架，围绕 **沪深300 ETF（510300）** 构建，包含：
+基于 LLM Agent 的量化因子自主发掘系统，聚焦沪深300横截面因子研究。系统融合了 R&D-Agent-Quant、AlphaAgent、QuantaAlpha、FactorMiner、Hubble 等开源框架的核心设计，实现了因子假设自动生成、多轮进化搜索、统一数据管理和研究流程闭环。
 
-- 真实数据抓取与更新
-- 分层式回测引擎
-- 双均线策略
-- 过滤条件（趋势过滤、波动率过滤、最小持有期、止损）
-- 参数对比（网格搜索）
-- 训练 / 测试分离验证
-- Walk-forward 滚动验证
-- 实验历史留痕与回看
-- 图表可视化
-- Streamlit 前端面板
-- 结果导出
+## 核心特性
+
+- **因子假设自动生成**：基于族感知多样性 + 正则化探索 + 经验记忆引导，自动生成候选因子表达式树
+- **多轮进化搜索**：假设→执行→评估→变异/交叉→再假设的自主闭环，支持早停与轨迹追踪
+- **安全因子执行**：白名单算子逐节点递归求值 + 预处理 + 行业中性化，确保因子面板可计算
+- **横截面评估体系**：Rank IC / ICIR / 分位单调性 / 稳定性 / 可交易性 / 综合评分
+- **因子库管理**：持久化存储 + 库内相关性比较 + 经验记忆沉淀
+- **统一数据层**：DataHub 抽象 + Provider 可扩展 + 质量报告 + 缓存复用
+- **策略回测与验证**：单次回测 / 参数扫描 / 训练-测试验证 / Walk-forward 验证
+- **决策可信度闸门**：计划评估→执行分流→自动重规划→结论验收
+
+## 系统架构
+
+```text
+┌─────────────────────────────────────────────────┐
+│               AssistantToolRuntime              │
+│          （14 个工具的统一运行时入口）              │
+├──────────┬──────────┬──────────┬────────────────┤
+│ 策略研究  │ 因子发掘  │ 进化搜索  │   数据管理     │
+│  6 tools │ 1 tool   │ 2 tools  │   2 tools     │
+├──────────┴──────────┴──────────┴────────────────┤
+│              Research Task Executor              │
+├─────────────────────────────────────────────────┤
+│  FactorDiscovery   │  FactorEvolution  │ DataHub │
+│  Orchestrator      │  Loop             │         │
+├────────────────────┼───────────────────┼─────────┤
+│  HypothesisGenerator│ EvolutionStrategy│ Provider│
+├────────────────────┴───────────────────┴─────────┤
+│  SafeFactorExecutor │ PersistentFactorStore       │
+│  FactorExperienceMemory │ FactorSpec/Models       │
+└─────────────────────────────────────────────────┘
+```
 
 ## 目录结构
 
 ```text
-quant-project/
-├─ quantlab/
-│  ├─ analysis/
-│  │  ├─ grid_search.py
-│  │  ├─ history_store.py
-│  │  └─ validation.py
-│  ├─ backtest/
-│  ├─ data/
-│  ├─ filters/
-│  ├─ strategies/
-│  ├─ visualization/
-│  ├─ config.py
-│  └─ pipeline.py
-├─ data/
-│  ├─ hs300_etf.csv
-│  └─ hs300_etf_sample.csv
-├─ reports/
-│  ├─ history/
-│  └─ latest/
-├─ app.py
-├─ fetch_hs300_etf.py
-├─ refresh_data.py
-├─ run_backtest.py
-├─ requirements.txt
-└─ README.md
+quant-agent/
+├── quantlab/
+│   ├── factor_discovery/          # 因子发掘核心模块
+│   │   ├── models.py              # 因子数据模型（FactorSpec / FactorNode / FactorLabelSpec）
+│   │   ├── hypothesis.py          # 因子假设生成器（族感知 + DSL约束 + Ralph Loop）
+│   │   ├── evolution.py           # 自主搜索循环（mutation/crossover + 轨迹进化）
+│   │   ├── pipeline.py            # 因子评估管线（横截面评估 + 评分卡 + 闭环编排）
+│   │   ├── runtime.py             # 安全执行器 + 因子库 + 经验记忆
+│   │   └── datahub.py             # DataHub 统一数据抽象层
+│   ├── assistant/                 # AI Agent 运行时
+│   │   ├── tools.py               # AssistantToolRuntime（14 工具）
+│   │   ├── evaluator.py           # 决策可信度评估
+│   │   ├── planner.py             # 研究计划生成
+│   │   ├── llm.py                 # LLM 调用封装
+│   │   ├── memory.py              # 会话记忆管理
+│   │   └── knowledge_base.py      # 知识库检索
+│   ├── research/                  # 研究任务执行框架
+│   │   ├── executor.py            # ResearchTaskExecutor
+│   │   ├── models.py              # 研究任务模型
+│   │   └── protocol.py            # 研究协议定义
+│   ├── strategies/                # 策略实现
+│   │   ├── base.py                # 策略基类
+│   │   ├── ma_cross.py            # 双均线交叉
+│   │   └── registry.py            # 策略注册表
+│   ├── analysis/                  # 分析工具
+│   │   ├── grid_search.py         # 参数网格搜索
+│   │   ├── validation.py          # 验证框架
+│   │   └── history_store.py       # 实验历史
+│   ├── data/                      # 数据获取层
+│   │   ├── fetcher.py             # 数据抓取（akshare + 雪球兜底）
+│   │   └── loader.py              # 数据加载
+│   ├── config.py                  # 全局配置
+│   └── pipeline.py                # 研究管线入口
+├── data/                          # 数据文件
+│   ├── hs300_cross_section.csv    # 沪深300横截面行情
+│   ├── hs300_cross_section_asset_metadata.csv  # 元数据缓存
+│   ├── hs300_cross_section_refresh_report.json # 刷新报告
+│   └── hs300_etf.csv              # 沪深300ETF行情
+├── assistant_data/                # Agent 持久化数据
+│   ├── knowledge/                 # 知识库文档
+│   └── memory/                    # 因子发掘运行记录
+│       └── factor_discovery_runs/ # 因子历史 JSON
+├── reports/                       # 研究报告输出
+├── strategies/                    # 策略参数配置
+├── fetch_hs300_etf.py             # 数据抓取脚本
+├── refresh_data.py                # 数据刷新脚本
+├── run_backtest.py                # 回测入口脚本
+└── requirements.txt               # Python 依赖
 ```
 
-## 核心能力
+## 工具清单
 
-### 1. 回测能力
-- 满仓买入 / 空仓卖出
-- 手续费与滑点建模
-- 止损控制
-- 最小持有期控制
-- 趋势过滤（价格位于长期均线上方才允许开仓）
-- 波动率过滤（波动过高时跳过开仓）
-- 基准买入并持有对比
+`AssistantToolRuntime` 当前注册 14 个工具：
 
-### 2. 参数对比
-支持对以下参数进行组合扫描：
-- 短均线窗口
-- 长均线窗口
-- 趋势过滤开关
-- 波动率过滤阈值
-- 止损阈值
+| 工具名 | 说明 |
+|--------|------|
+| `view_current_config` | 查看当前配置与数据路径 |
+| `list_strategies` | 查看可用策略列表 |
+| `run_single_backtest` | 运行单次回测 |
+| `run_grid_experiment` | 运行参数网格搜索 |
+| `run_train_test_validation` | 训练-测试验证 |
+| `run_walk_forward_validation` | Walk-forward 滚动验证 |
+| `run_multi_strategy_compare` | 多策略横向比较 |
+| `review_portfolio_construction` | 组合构建评审 |
+| `run_factor_discovery` | 因子发掘闭环（假设→执行→评估→入库） |
+| `refresh_cross_section_data` | 刷新横截面行情数据 |
+| `generate_factor_hypotheses` | 生成因子假设候选 |
+| `run_factor_evolution` | 运行多轮进化搜索循环 |
+| `list_experiment_history` | 查看实验历史 |
+| `get_experiment_detail` | 查看实验详情 |
 
-输出：
-- 参数组合汇总表
-- 最优参数
-- 参数散点图
-- 收益 / 回撤 / Sharpe 对比
+## 快速开始
 
-### 3. 训练 / 测试验证
-支持先在训练集做参数筛选，再放到测试集看样本外表现：
-- 可在侧边栏调整训练集占比
-- 训练集上执行网格搜索
-- 自动提取训练集最佳参数
-- 与当前基线参数在测试集做并排对比
-- 降低只看全样本回测时的过拟合错觉
-
-### 4. Walk-forward 验证
-支持按滚动窗口反复执行“训练选参 → 样本外测试”：
-- 可配置训练窗口、测试窗口和滚动步长
-- 每个窗口都会独立完成选参与样本外验证
-- 输出逐窗口最佳参数、样本外收益、样本外 Sharpe、样本外回撤
-- 自动汇总正收益窗口占比、跑赢基线占比、参数一致性等稳定性信息
-- 生成稳定性评分（stability score）和稳定性标签，便于快速做稳健性评审
-- 进一步生成研究总分（research score）与研究标签，把收益、Sharpe、回撤、超额收益和稳定性整合成统一评审分
-- 支持查看参数 regime 演化，观察不同 walk-forward 窗口里最优参数如何漂移
-- 在前端展示逐窗口收益曲线对比图 + 收益 / 回撤细粒度图
-- 在前端展示研究评分雷达图与参数 regime 演化图
-- 支持从历史详情直接回看某次 walk-forward 的完整窗口摘要
-- 适合比单次 train/test 更接近真实研究流程的稳健性检查
-
-### 5. 实验历史
-每次运行以下流程都会自动写入历史记录：
-- 单次回测
-- 参数对比实验
-- 训练 / 测试验证
-- Walk-forward 验证
-
-历史记录会保存在 `reports/history/` 下，便于后续回看：
-- 实验类型
-- 运行时间
-- 核心参数
-- 核心指标
-- 备注信息（如最佳参数、窗口汇总、数据来源等）
-- 点开查看详情后的配置 / 指标 / walk-forward 窗口摘要
-- 历史指标柱状对比 + 双指标散点对比
-- 稳定性评分、稳定性标签、参数一致性等评审字段
-- 研究总分、研究标签、超额年化等综合评审字段
-- 多实验并排评审表、稳定性排行与研究排序
-
-### 6. 可视化面板
-前端面板包含：
-- 数据状态与更新时间
-- 单次回测控制台
-- 参数对比实验台
-- 验证实验页签（训练 / 测试验证 + Walk-forward）
-- Walk-forward 双图联动查看（样本外年化、样本外累计收益 / 最大回撤）
-- Walk-forward 稳定性摘要卡片
-- Walk-forward 研究评分雷达图
-- Walk-forward 参数 regime 演化图
-- 实验历史页签
-- 实验历史筛选条件
-- 历史指标对比图
-- 历史实验双指标散点对比
-- 稳定性评分区间 / 标签筛选
-- 研究标签筛选
-- 稳定性评分排行
-- 研究排序与多实验指标并排评审
-- 历史实验详情查看
-- 净值曲线与信号图
-- 交易明细表
-- 结果下载按钮
-
-
-## 安装依赖
+### 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 更新数据
+主要依赖：`pandas >= 2.2.0`、`numpy >= 1.26.0`、`akshare >= 1.18.55`
+
+### 数据准备
 
 ```bash
+# 刷新沪深300横截面数据（多资产行情 + 元数据）
+python refresh_data.py
+
+# 或只刷新 ETF 单资产行情
 python fetch_hs300_etf.py
 ```
 
-或：
+### 运行回测
 
 ```bash
-python refresh_data.py
+python run_backtest.py --data "data/hs300_etf.csv" --strategy ma_cross
 ```
 
-## 命令行运行单次回测
+### 编程方式调用
 
-```bash
-python run_backtest.py --data "D:\quant-project\data\hs300_etf.csv"
+```python
+from pathlib import Path
+from quantlab.config import BacktestConfig
+from quantlab.assistant.tools import AssistantToolRuntime
+
+rt = AssistantToolRuntime(BacktestConfig(), Path("data/hs300_cross_section.csv"))
+
+# 生成因子假设
+result = rt.execute("generate_factor_hypotheses", {
+    "research_direction": "量价背离",
+    "max_candidates": 5,
+})
+
+# 运行进化搜索
+result = rt.execute("run_factor_evolution", {
+    "direction": "波动率调整动量",
+    "max_rounds": 3,
+    "candidates_per_round": 5,
+})
+
+# 单次因子发掘
+result = rt.execute("run_factor_discovery", {
+    "factor_prompt": "量价背离",
+})
 ```
 
-命令行现在会输出：
-- 回测核心指标
-- 数据区间与数据行数
-- 历史记录 JSON 路径
-- 最近一次结果导出目录
+## 因子发掘架构详解
 
-## 启动前端面板
+### 因子假设生成器（hypothesis.py）
 
-```bash
-streamlit run app.py --server.port 8501
+融合 AlphaAgent 正则化探索 + Hubble DSL 约束 + FactorMiner Ralph Loop：
+
+- **6 个因子族**：momentum / reversal / volatility / volume_price / liquidity / fundamental
+- **12 个 DSL 算子**：rank / zscore / delta / lag / mean / std / ts_rank / add / sub / mul / div / min / max / clip
+- **3 种模板策略**：基础时序算子组合、双特征交叉组合、波动率调整组合
+- **Retrieve-Adapt 循环**：从经验记忆和因子库提取相关模式，引导假设生成
+- **族感知多样性**：对过度集中的族施加惩罚，保证搜索覆盖面
+- **正则化探索**：对探索不足的方向给予奖励，避免同质化
+
+### 自主搜索循环（evolution.py）
+
+融合 QuantaAlpha 轨迹进化 + FactorMiner Ralph Loop + R&D-Agent-Quant 两阶段迭代：
+
+- **轨迹级进化**：mutation（算子替换 / 窗口调整 / 子树交换）+ crossover（子树交叉）
+- **多轮闭环**：假设→执行→评估→进化→再假设
+- **早停机制**：连续 N 轮无改善自动终止
+- **经验自动记录**：成功模式 / 失败约束 / 观察结果持久化
+
+### 统一数据层（datahub.py）
+
+借鉴 Qlib DataProvider 抽象：
+
+- **Provider 模式**：`LocalCSVProvider`（当前）→ 可扩展 `AkshareProvider` / `TushareProvider` / `WindProvider`
+- **数据质量报告**：资产数 / 行业覆盖率 / 市值覆盖率 / NaN 比率 / 最近刷新时间
+- **缓存复用**：加载后缓存，刷新后自动失效
+
+### 横截面评估体系（pipeline.py）
+
+- **Rank IC / ICIR**：因子排序预测能力
+- **分位单调性**：多空组合收益单调性
+- **稳定性评分**：时间序列 IC 一致性
+- **可交易性评分**：换手率与冲击成本考量
+- **综合评分**：加权合成，决策阈值 approved(>0.55) / observe(>0.25) / rejected
+
+### 数据获取层（data/fetcher.py）
+
+- **主来源**：akshare（`stock_individual_info_em`）
+- **兜底来源**：雪球个股资料（`stock_individual_basic_info_xq`）
+- **元数据缓存**：行业 / 简称 / 市值 / 股本自动补齐
+- **unknown 行业智能刷新**：缓存中行业仍为 unknown 的资产会自动重新抓取
+
+## AI Agent 配置
+
+支持两层配置来源（优先级从低到高）：
+
+1. 项目根目录 `.env`
+2. 系统环境变量
+
+```env
+ASSISTANT_BASE_URL=https://your-api-endpoint/v1
+ASSISTANT_API_KEY=your_api_key
+ASSISTANT_MODEL=gpt-5.4
 ```
 
-## 面板建议使用方式
+## 决策可信度机制
 
-1. 先点击“更新沪深300ETF数据”
-2. 调整策略参数与过滤条件
-3. 运行“单次回测”查看净值曲线和交易明细
-4. 进入“参数对比实验”做网格搜索
-5. 进入“验证实验”切换：
-   - 训练 / 测试验证：做一次快速样本外检查
-   - Walk-forward 验证：做滚动稳健性验证
-6. 最后到“实验历史”统一筛选、对比、看散点关系并点开详情
+研究计划在执行前会经过可信度评估，决定后续执行路径：
 
-## 当前默认策略
-- 标的：沪深300 ETF（510300）
-- 策略：双均线交叉
-- 默认参数：5 / 20
-- 基础风险控制：止损、趋势过滤、波动率过滤可选
-- 默认训练集占比：70%
-- 默认 Walk-forward：训练窗口 504 日，测试窗口 126 日，步长 126 日
+- **pass**：正常执行原计划
+- **review_required**：降级为保守验证计划
+- **fail**：触发自动重规划，补齐缺失研究链路
 
-## 当前输出目录说明
-- `reports/latest/`：最近一次回测导出的指标、净值曲线、交易记录
-- `reports/history/`：所有实验历史 JSON 记录
+评估维度：计划可信度 / 执行可信度 / 结论可信度，每个维度都有验收阈值和闸门状态。
 
-## 本轮体检修复
-- 已修复 `run_backtest.py` 与 `run_single_backtest()` 返回值不一致的问题
-- 已把命令行入口补齐历史记录输出，便于追踪最近一次实验
-- 已把 walk-forward 细粒度图和历史双指标对比同步接入前端
-- 已确保历史详情页能直接展开 walk-forward 窗口摘要
+## 参考框架
 
-## 继续升级建议
-如果要继续往实盘级靠近，下一批建议优先做：
-- 多标的组合回测
-- 仓位管理（分批进出）
-- Walk-forward 参数稳定性评分
-- 更多因子过滤
-- 交易成本更细粒度建模
+本项目架构设计借鉴了以下开源框架的核心思路：
 
+| 框架 | 借鉴点 |
+|------|--------|
+| [R&D-Agent-Quant](https://github.com/microsoft/RD-Agent) | Research→Development 两阶段迭代 |
+| [AlphaAgent](https://arxiv.org/abs/2502.16789) | LLM + 正则化探索 + 抗衰减评估 |
+| [QuantaAlpha](https://arxiv.org/abs/2602.07085) | 轨迹级 mutation/crossover 进化 |
+| [FactorMiner](https://arxiv.org/abs/2602.14670) | Ralph Loop (Retrieve→Adapt→Learn→Plan→Harvest) |
+| [Hubble](https://arxiv.org/abs/2604.09601) | DSL 约束生成 + AST 验证 + 族感知多样性 |
+
+## License
+
+MIT

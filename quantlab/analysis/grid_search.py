@@ -7,23 +7,16 @@ import pandas as pd
 
 from quantlab.backtest.engine import BacktestResult, run_long_only_backtest
 from quantlab.config import BacktestConfig
-from quantlab.strategies.base import StrategySignalConfig
-from quantlab.strategies.ma_cross import generate_ma_signals
+from quantlab.strategies import get_strategy
 
 
-def _build_signal_config(config: BacktestConfig) -> StrategySignalConfig:
-    return StrategySignalConfig(
-        short_window=config.short_window,
-        long_window=config.long_window,
-        enable_trend_filter=config.enable_trend_filter,
-        trend_window=config.trend_window,
-        enable_volatility_filter=config.enable_volatility_filter,
-        volatility_window=config.volatility_window,
-        max_volatility=config.max_volatility,
-    )
-
-
-def run_parameter_grid(price_df: pd.DataFrame, base_config: BacktestConfig, parameter_grid: dict[str, list]) -> tuple[pd.DataFrame, BacktestResult]:
+def run_parameter_grid(
+    price_df: pd.DataFrame,
+    base_config: BacktestConfig,
+    parameter_grid: dict[str, list],
+    strategy_name: str = "ma_cross",
+) -> tuple[pd.DataFrame, BacktestResult]:
+    strategy = get_strategy(strategy_name)
     keys = list(parameter_grid.keys())
     rows: list[dict] = []
     best_result: BacktestResult | None = None
@@ -32,7 +25,7 @@ def run_parameter_grid(price_df: pd.DataFrame, base_config: BacktestConfig, para
     for values in product(*(parameter_grid[key] for key in keys)):
         overrides = dict(zip(keys, values))
         config = BacktestConfig(**{**asdict(base_config), **overrides})
-        signal_df = generate_ma_signals(price_df, _build_signal_config(config))
+        signal_df = strategy.generate_signals(price_df, config)
         result = run_long_only_backtest(signal_df, config)
 
         row = {**overrides, **result.metrics}
@@ -47,3 +40,4 @@ def run_parameter_grid(price_df: pd.DataFrame, base_config: BacktestConfig, para
     if best_result is None:
         raise ValueError("参数扫描未生成任何结果")
     return summary_df, best_result
+

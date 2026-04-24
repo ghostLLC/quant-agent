@@ -1,0 +1,48 @@
+{
+  "session_id": "connection-test-f237acd7",
+  "messages": [
+    {
+      "role": "user",
+      "content": "请先调用 view_current_config 工具，再用一句话说明当前默认短均线和长均线。",
+      "metadata": {},
+      "timestamp": "2026-04-21 15:56:26"
+    },
+    {
+      "role": "assistant",
+      "content": "当前默认短均线是 5 日，长均线是 20 日。",
+      "metadata": {
+        "tool_logs": [
+          {
+            "tool": "view_current_config",
+            "arguments": {},
+            "result": {
+              "initial_capital": 100000.0,
+              "commission_rate": 0.0003,
+              "slippage_rate": 0.0002,
+              "short_window": 5,
+              "long_window": 20,
+              "benchmark_symbol": "510300",
+              "trading_days_per_year": 252,
+              "stop_loss_pct": null,
+              "min_holding_days": 0,
+              "enable_trend_filter": false,
+              "trend_window": 60,
+              "enable_volatility_filter": false,
+              "volatility_window": 20,
+              "max_volatility": null,
+              "train_ratio": 0.7,
+              "walk_forward_train_window": 504,
+              "walk_forward_test_window": 126,
+              "walk_forward_step_size": 126,
+              "report_dir": "D:\\quant-project\\reports\\latest",
+              "history_dir": "D:\\quant-project\\reports\\history",
+              "data_path": "D:\\quant-project\\data\\hs300_etf.csv"
+            }
+          }
+        ]
+      },
+      "timestamp": "2026-04-21 15:56:31"
+    }
+  ],
+  "summary": "会话摘要：\n- 用户：请先调用 view_current_config 工具，再用一句话说明当前默认短均线和长均线。"
+}

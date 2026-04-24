@@ -7,8 +7,7 @@ import pandas as pd
 from quantlab.analysis.grid_search import run_parameter_grid
 from quantlab.backtest.engine import BacktestResult
 from quantlab.config import BacktestConfig
-from quantlab.strategies.base import StrategySignalConfig
-from quantlab.strategies.ma_cross import generate_ma_signals
+from quantlab.strategies import get_strategy
 
 
 def split_train_test(price_df: pd.DataFrame, train_ratio: float) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -21,20 +20,14 @@ def split_train_test(price_df: pd.DataFrame, train_ratio: float) -> tuple[pd.Dat
     return train_df, test_df
 
 
-def _signal_config_from_backtest(config: BacktestConfig) -> StrategySignalConfig:
-    return StrategySignalConfig(
-        short_window=config.short_window,
-        long_window=config.long_window,
-        enable_trend_filter=config.enable_trend_filter,
-        trend_window=config.trend_window,
-        enable_volatility_filter=config.enable_volatility_filter,
-        volatility_window=config.volatility_window,
-        max_volatility=config.max_volatility,
-    )
-
-
-def _run_backtest_with_config(price_df: pd.DataFrame, config: BacktestConfig, backtest_runner) -> BacktestResult:
-    signal_df = generate_ma_signals(price_df, _signal_config_from_backtest(config))
+def _run_backtest_with_config(
+    price_df: pd.DataFrame,
+    config: BacktestConfig,
+    backtest_runner,
+    strategy_name: str = "ma_cross",
+) -> BacktestResult:
+    strategy = get_strategy(strategy_name)
+    signal_df = strategy.generate_signals(price_df, config)
     return backtest_runner(signal_df, config)
 
 
@@ -172,22 +165,20 @@ def summarize_walk_forward_research_score(fold_summary: pd.DataFrame, average_me
     }
 
 
-
-
-
 def run_train_test_validation(
     price_df: pd.DataFrame,
     base_config: BacktestConfig,
     parameter_grid: dict[str, list],
     backtest_runner,
+    strategy_name: str = "ma_cross",
 ) -> dict:
     train_df, test_df = split_train_test(price_df, base_config.train_ratio)
-    train_summary, best_train_result = run_parameter_grid(train_df, base_config, parameter_grid)
+    train_summary, best_train_result = run_parameter_grid(train_df, base_config, parameter_grid, strategy_name=strategy_name)
     best_params = train_summary.iloc[0][list(parameter_grid.keys())].to_dict()
 
     tuned_config = BacktestConfig(**{**asdict(base_config), **best_params})
-    test_result = _run_backtest_with_config(test_df, tuned_config, backtest_runner)
-    baseline_test_result = _run_backtest_with_config(test_df, base_config, backtest_runner)
+    test_result = _run_backtest_with_config(test_df, tuned_config, backtest_runner, strategy_name=strategy_name)
+    baseline_test_result = _run_backtest_with_config(test_df, base_config, backtest_runner, strategy_name=strategy_name)
 
     overview = {
         "train_rows": int(len(train_df)),
@@ -208,12 +199,12 @@ def run_train_test_validation(
     }
 
 
-
 def run_walk_forward_validation(
     price_df: pd.DataFrame,
     base_config: BacktestConfig,
     parameter_grid: dict[str, list],
     backtest_runner,
+    strategy_name: str = "ma_cross",
 ) -> dict:
     _validate_walk_forward_windows(price_df, base_config)
 
@@ -233,12 +224,12 @@ def run_walk_forward_validation(
         train_df = price_df.iloc[start_idx : start_idx + train_window].copy().reset_index(drop=True)
         test_df = price_df.iloc[start_idx + train_window : start_idx + train_window + test_window].copy().reset_index(drop=True)
 
-        train_summary, best_train_result = run_parameter_grid(train_df, base_config, parameter_grid)
+        train_summary, best_train_result = run_parameter_grid(train_df, base_config, parameter_grid, strategy_name=strategy_name)
         best_params = train_summary.iloc[0][list(parameter_grid.keys())].to_dict()
         tuned_config = BacktestConfig(**{**asdict(base_config), **best_params})
 
-        test_result = _run_backtest_with_config(test_df, tuned_config, backtest_runner)
-        baseline_result = _run_backtest_with_config(test_df, base_config, backtest_runner)
+        test_result = _run_backtest_with_config(test_df, tuned_config, backtest_runner, strategy_name=strategy_name)
+        baseline_result = _run_backtest_with_config(test_df, base_config, backtest_runner, strategy_name=strategy_name)
 
         fold_meta = {
             "fold_id": fold_id,
@@ -349,5 +340,6 @@ def run_walk_forward_validation(
         "walk_forward_equity": walk_forward_equity,
         "baseline_walk_forward_equity": baseline_walk_forward_equity,
     }
+
 
 

@@ -9,6 +9,26 @@ __pycache__/
 venv/
 .env
 .env.*
+
+# 报告输出（运行时生成）
 reports/latest/
 reports/history/
 reports/*.csv
+
+# 数据文件（太大不适合 git）
+data/*.csv
+data/*.json
+
+# Agent 运行时数据
+assistant_data/memory/factor_discovery_runs/
+assistant_data/memory/factor_discovery/panels/
+assistant_data/memory/sessions/
+assistant_data/memory/summaries/
+
+# 临时测试脚本
+test_*.py
+
+# IDE
+.idea/
+.vscode/
+*.swp

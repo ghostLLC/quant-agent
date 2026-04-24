@@ -1,0 +1,488 @@
+{
+  "experiences": [
+    {
+      "experience_id": "exp_quality_success_001",
+      "factor_family": "quality",
+      "pattern_type": "successful_pattern",
+      "summary": "质量类因子在行业中性化后更稳定，极端行情下仍需叠加波动约束。",
+      "outcome": "success",
+      "evidence": {},
+      "tags": [
+        "quality",
+        "industry_neutral"
+      ]
+    },
+    {
+      "experience_id": "exp_momentum_failure_001",
+      "factor_family": "momentum",
+      "pattern_type": "rejected_reason",
+      "summary": "高换手动量因子即便 IC 较高，也常因成本与拥挤暴露被淘汰。",
+      "outcome": "failure",
+      "evidence": {},
+      "tags": [
+        "momentum",
+        "turnover"
+      ]
+    },
+    {
+      "experience_id": "exp_regime_quality_001",
+      "factor_family": "quality",
+      "pattern_type": "regime_finding",
+      "summary": "高波动阶段若没有行业和市值双重中性化，质量因子稳定性明显下降。",
+      "outcome": "success",
+      "evidence": {},
+      "tags": [
+        "quality",
+        "high_vol"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_25782cf875::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_25782cf875::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "observe",
+        "volume_price",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_70104a398a::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_70104a398a::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "observe",
+        "volume_price",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_c56f11970e::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_c56f11970e::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "observe",
+        "volume_price",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_d667b4ae59::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_d667b4ae59::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "volume_price",
+        "observe",
+        "auto_generated",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_ffe774479e::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_ffe774479e::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "volume_price",
+        "research_executor",
+        "auto_generated",
+        "observe"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_2b879e4d1f::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_2b879e4d1f::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "auto_generated",
+        "volume_price",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_88ec5ab8ff::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_88ec5ab8ff::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "research_executor",
+        "volume_price",
+        "observe"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_cba8ae0de5::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_cba8ae0de5::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "volume_price",
+        "observe",
+        "research_executor"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_669678fa12::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "与现有因子库相关性过高，先放入观察区而不是正式入库。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_669678fa12::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "research_executor",
+        "observe",
+        "volume_price",
+        "auto_generated"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_82ecf1d879::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_82ecf1d879::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "research_executor",
+        "observe",
+        "volume_price",
+        "auto_generated"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_54de1f4c98::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_54de1f4c98::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_7f4e3579c5::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_7f4e3579c5::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp_88585f47",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.2680，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_54de1f4c98",
+        "family": "volume_price",
+        "composite_score": "0.26803",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp_e26ae3d2",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.3119，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_7f4e3579c5",
+        "family": "volume_price",
+        "composite_score": "0.31187",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_383b228460::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_383b228460::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_82c2f1f44f::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_82c2f1f44f::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp_4efea4b0",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.2680，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_383b228460",
+        "family": "volume_price",
+        "composite_score": "0.26803",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp_d9de9c1e",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.3119，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_82c2f1f44f",
+        "family": "volume_price",
+        "composite_score": "0.31187",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_81aa3ca8b9::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_81aa3ca8b9::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "research_executor",
+        "observe",
+        "evolved",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_c28280f6a2::v1",
+      "factor_family": "volume_price",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_c28280f6a2::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "auto_generated",
+        "research_executor",
+        "observe",
+        "evolved",
+        "volume_price"
+      ]
+    },
+    {
+      "experience_id": "exp_78bcb36e",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.2596，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_81aa3ca8b9",
+        "family": "volume_price",
+        "composite_score": "0.25965",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp_35ccdbe7",
+      "factor_family": "volume_price",
+      "pattern_type": "observation",
+      "summary": "volume_price族因子，RankIC=0.0000，综合评分=0.2596，决策=observe",
+      "outcome": "observe",
+      "evidence": {
+        "factor_id": "factor_c28280f6a2",
+        "family": "volume_price",
+        "composite_score": "0.25965",
+        "rank_ic_mean": "0.0",
+        "ic_ir": "0.0",
+        "coverage": "1.0",
+        "decision": "observe",
+        "decision_reason": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+        "status": "success"
+      },
+      "tags": [
+        "volume_price",
+        "observation"
+      ]
+    },
+    {
+      "experience_id": "exp::factor_75a61cf93f::v1",
+      "factor_family": "momentum",
+      "pattern_type": "research_observation",
+      "summary": "ICIR 偏弱，先继续观察并补做更多阶段验证。",
+      "outcome": "observe",
+      "evidence": {
+        "report_id": "report::factor_75a61cf93f::v1",
+        "ic_mean": 0.0,
+        "rank_ic_mean": 0.0,
+        "ic_ir": 0.0
+      },
+      "tags": [
+        "observe",
+        "momentum",
+        "research_executor"
+      ]
+    }
+  ]
+}
