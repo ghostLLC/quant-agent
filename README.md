@@ -1,216 +1,265 @@
-# Quant Agent — AI 驱动的量化因子发掘系统
+# Quant Agent
 
-基于 LLM Agent 的量化因子自主发掘系统，聚焦沪深300横截面因子研究。系统融合了 R&D-Agent-Quant、AlphaAgent、QuantaAlpha、FactorMiner、Hubble 等开源框架的核心设计，实现了因子假设自动生成、多轮进化搜索、统一数据管理和研究流程闭环。
+<div align="center">
 
-## 核心特性
+**AI-native Quant Research Agent for Cross-sectional Factor Discovery**
 
-- **因子假设自动生成**：基于族感知多样性 + 正则化探索 + 经验记忆引导，自动生成候选因子表达式树
-- **多轮进化搜索**：假设→执行→评估→变异/交叉→再假设的自主闭环，支持早停与轨迹追踪
-- **安全因子执行**：白名单算子逐节点递归求值 + 预处理 + 行业中性化，确保因子面板可计算
-- **横截面评估体系**：Rank IC / ICIR / 分位单调性 / 稳定性 / 可交易性 / 综合评分
-- **因子库管理**：持久化存储 + 库内相关性比较 + 经验记忆沉淀
-- **统一数据层**：DataHub 抽象 + Provider 可扩展 + 质量报告 + 缓存复用
-- **策略回测与验证**：单次回测 / 参数扫描 / 训练-测试验证 / Walk-forward 验证
-- **决策可信度闸门**：计划评估→执行分流→自动重规划→结论验收
+聚焦 **沪深300横截面因子研究** 的量化 Agent 系统，围绕 **因子假设生成、自动执行评估、多轮进化搜索、经验记忆沉淀** 构建完整研究闭环。
 
-## 系统架构
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white">
+  <img alt="Pandas" src="https://img.shields.io/badge/Pandas-2.2%2B-150458?style=flat-square&logo=pandas&logoColor=white">
+  <img alt="NumPy" src="https://img.shields.io/badge/NumPy-1.26%2B-013243?style=flat-square&logo=numpy&logoColor=white">
+  <img alt="AkShare" src="https://img.shields.io/badge/Data-AkShare-orange?style=flat-square">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
+  <img alt="Status" src="https://img.shields.io/badge/Status-Active%20Development-8A2BE2?style=flat-square">
+</p>
+
+</div>
+
+---
+
+## Overview
+
+Quant Agent 不是一个只会“跑回测”的脚本集合，而是一个朝 **成熟量化因子发掘 Agent** 演进的研究系统。
+
+它融合了 **R&D-Agent-Quant、AlphaAgent、QuantaAlpha、FactorMiner、Hubble** 等框架的关键思路，把传统的量化研究流程拆成一条可自动化执行的链路：
+
+> **提出假设 → 生成因子表达 → 安全执行 → 横截面评估 → 进化搜索 → 经验沉淀 → 再发掘**
+
+当前版本已经能在真实沪深300横截面数据上完成：
+
+- 因子假设自动生成
+- 多轮进化搜索
+- 横截面评估与打分
+- 因子库持久化与经验记忆
+- 数据刷新与质量报告
+- Agent 工具化调用
+
+---
+
+## Highlights
+
+| 能力 | 说明 |
+|---|---|
+| **Hypothesis Generation** | 基于族感知多样性、正则化探索、经验记忆引导，自动生成候选因子 |
+| **Evolution Loop** | 支持 mutation / crossover / early-stop 的多轮因子进化搜索 |
+| **Safe Execution** | 用 DSL + AST + 白名单算子保证因子表达可控、可算、可审计 |
+| **Cross-sectional Evaluation** | 覆盖 Rank IC、ICIR、分位单调性、稳定性、可交易性等核心指标 |
+| **DataHub** | 统一数据访问层，支持缓存、质量报告与 Provider 扩展 |
+| **Agent Runtime** | 已接入 `AssistantToolRuntime`，支持 14 个研究工具统一调用 |
+
+---
+
+## Architecture
 
 ```text
-┌─────────────────────────────────────────────────┐
-│               AssistantToolRuntime              │
-│          （14 个工具的统一运行时入口）              │
-├──────────┬──────────┬──────────┬────────────────┤
-│ 策略研究  │ 因子发掘  │ 进化搜索  │   数据管理     │
-│  6 tools │ 1 tool   │ 2 tools  │   2 tools     │
-├──────────┴──────────┴──────────┴────────────────┤
-│              Research Task Executor              │
-├─────────────────────────────────────────────────┤
-│  FactorDiscovery   │  FactorEvolution  │ DataHub │
-│  Orchestrator      │  Loop             │         │
-├────────────────────┼───────────────────┼─────────┤
-│  HypothesisGenerator│ EvolutionStrategy│ Provider│
-├────────────────────┴───────────────────┴─────────┤
-│  SafeFactorExecutor │ PersistentFactorStore       │
-│  FactorExperienceMemory │ FactorSpec/Models       │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    AssistantToolRuntime                    │
+│                统一的 Agent 工具运行时入口                 │
+├──────────────┬──────────────┬──────────────┬───────────────┤
+│  Backtest    │ Factor Disc. │  Evolution   │   Data Ops    │
+│   Tools      │    Tools     │    Tools     │     Tools     │
+├──────────────┴──────────────┴──────────────┴───────────────┤
+│                    ResearchTaskExecutor                    │
+├──────────────────────────┬──────────────────┬──────────────┤
+│ FactorDiscoveryPipeline  │ FactorEvolution  │   DataHub    │
+│                          │      Loop        │              │
+├──────────────────────────┴──────────────────┴──────────────┤
+│ HypothesisGenerator / SafeFactorExecutor / FactorStore     │
+│ ExperienceMemory / Evaluation Pipeline / Data Providers    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## 目录结构
+### Research Loop
+
+```text
+Research Direction
+      ↓
+Hypothesis Generator
+      ↓
+Factor Spec / Expression Tree
+      ↓
+Safe Execution on Cross-sectional Data
+      ↓
+Evaluation & Scoring
+      ↓
+Approve / Observe / Reject
+      ↓
+Evolution Loop + Experience Memory
+      ↓
+Next-round Candidates
+```
+
+---
+
+## Project Structure
 
 ```text
 quant-agent/
 ├── quantlab/
+│   ├── assistant/                 # Agent 运行时与工具注册
 │   ├── factor_discovery/          # 因子发掘核心模块
-│   │   ├── models.py              # 因子数据模型（FactorSpec / FactorNode / FactorLabelSpec）
-│   │   ├── hypothesis.py          # 因子假设生成器（族感知 + DSL约束 + Ralph Loop）
-│   │   ├── evolution.py           # 自主搜索循环（mutation/crossover + 轨迹进化）
-│   │   ├── pipeline.py            # 因子评估管线（横截面评估 + 评分卡 + 闭环编排）
-│   │   ├── runtime.py             # 安全执行器 + 因子库 + 经验记忆
-│   │   └── datahub.py             # DataHub 统一数据抽象层
-│   ├── assistant/                 # AI Agent 运行时
-│   │   ├── tools.py               # AssistantToolRuntime（14 工具）
-│   │   ├── evaluator.py           # 决策可信度评估
-│   │   ├── planner.py             # 研究计划生成
-│   │   ├── llm.py                 # LLM 调用封装
-│   │   ├── memory.py              # 会话记忆管理
-│   │   └── knowledge_base.py      # 知识库检索
 │   ├── research/                  # 研究任务执行框架
-│   │   ├── executor.py            # ResearchTaskExecutor
-│   │   ├── models.py              # 研究任务模型
-│   │   └── protocol.py            # 研究协议定义
-│   ├── strategies/                # 策略实现
-│   │   ├── base.py                # 策略基类
-│   │   ├── ma_cross.py            # 双均线交叉
-│   │   └── registry.py            # 策略注册表
-│   ├── analysis/                  # 分析工具
-│   │   ├── grid_search.py         # 参数网格搜索
-│   │   ├── validation.py          # 验证框架
-│   │   └── history_store.py       # 实验历史
-│   ├── data/                      # 数据获取层
-│   │   ├── fetcher.py             # 数据抓取（akshare + 雪球兜底）
-│   │   └── loader.py              # 数据加载
+│   ├── analysis/                  # 回测验证、参数搜索、实验分析
+│   ├── strategies/                # 策略实现与注册
+│   ├── data/                      # 数据抓取与加载
 │   ├── config.py                  # 全局配置
-│   └── pipeline.py                # 研究管线入口
-├── data/                          # 数据文件
-│   ├── hs300_cross_section.csv    # 沪深300横截面行情
-│   ├── hs300_cross_section_asset_metadata.csv  # 元数据缓存
-│   ├── hs300_cross_section_refresh_report.json # 刷新报告
-│   └── hs300_etf.csv              # 沪深300ETF行情
-├── assistant_data/                # Agent 持久化数据
-│   ├── knowledge/                 # 知识库文档
-│   └── memory/                    # 因子发掘运行记录
-│       └── factor_discovery_runs/ # 因子历史 JSON
-├── reports/                       # 研究报告输出
-├── strategies/                    # 策略参数配置
-├── fetch_hs300_etf.py             # 数据抓取脚本
-├── refresh_data.py                # 数据刷新脚本
-├── run_backtest.py                # 回测入口脚本
-└── requirements.txt               # Python 依赖
+│   └── pipeline.py                # 主研究管线入口
+├── data/                          # 本地行情与元数据
+├── assistant_data/                # Agent 持久化知识、记忆与运行记录
+├── reports/                       # 报告输出目录
+├── refresh_data.py                # 横截面数据刷新脚本
+├── fetch_hs300_etf.py             # ETF 数据抓取脚本
+├── run_backtest.py                # 回测入口
+├── requirements.txt               # Python 依赖
+└── README.md
 ```
 
-## 工具清单
+---
 
-`AssistantToolRuntime` 当前注册 14 个工具：
+## Core Modules
 
-| 工具名 | 说明 |
-|--------|------|
+### 1. `hypothesis.py` — 因子假设生成器
+
+融合 **AlphaAgent + Hubble + FactorMiner Ralph Loop** 的思路：
+
+- 6 类因子族：`momentum / reversal / volatility / volume_price / liquidity / fundamental`
+- 12+ DSL 算子：`rank / zscore / delta / lag / mean / std / ts_rank / add / sub / mul / div / clip ...`
+- 3 类模板策略：基础时序、双特征交叉、波动率调整
+- 经验记忆检索 + 族感知多样性惩罚 + 探索奖励
+- 已替代旧版 `executor.py` 中的硬编码模板生成逻辑
+
+### 2. `evolution.py` — 自主搜索循环
+
+融合 **QuantaAlpha + FactorMiner + R&D-Agent-Quant** 的设计：
+
+- 多轮闭环：假设 → 执行 → 评估 → 进化 → 再假设
+- 支持 `mutation` / `crossover`
+- 支持 early stop
+- 自动沉淀成功模式、失败约束和观察记录
+
+### 3. `datahub.py` — 统一数据抽象层
+
+- Provider 抽象，当前支持本地 CSV
+- 可扩展到 AkShare / Tushare / Wind 等数据源
+- 内置缓存复用
+- 输出数据质量报告：覆盖率、NaN 比例、最近刷新时间等
+
+### 4. `pipeline.py` — 横截面评估体系
+
+- Rank IC / ICIR
+- 分位单调性
+- 稳定性评分
+- 可交易性评分
+- 综合评分与决策分级：`approved / observe / rejected`
+
+### 5. `AssistantToolRuntime` — Agent 工具运行时
+
+当前已注册 **14 个工具**，可直接被上层 Agent 或自动化流程调用。
+
+---
+
+## Tooling
+
+| Tool | Description |
+|---|---|
 | `view_current_config` | 查看当前配置与数据路径 |
 | `list_strategies` | 查看可用策略列表 |
 | `run_single_backtest` | 运行单次回测 |
 | `run_grid_experiment` | 运行参数网格搜索 |
 | `run_train_test_validation` | 训练-测试验证 |
-| `run_walk_forward_validation` | Walk-forward 滚动验证 |
-| `run_multi_strategy_compare` | 多策略横向比较 |
+| `run_walk_forward_validation` | Walk-forward 验证 |
+| `run_multi_strategy_compare` | 多策略比较 |
 | `review_portfolio_construction` | 组合构建评审 |
-| `run_factor_discovery` | 因子发掘闭环（假设→执行→评估→入库） |
-| `refresh_cross_section_data` | 刷新横截面行情数据 |
-| `generate_factor_hypotheses` | 生成因子假设候选 |
-| `run_factor_evolution` | 运行多轮进化搜索循环 |
+| `run_factor_discovery` | 单次因子发掘闭环 |
+| `refresh_cross_section_data` | 刷新横截面数据 |
+| `generate_factor_hypotheses` | 批量生成因子候选 |
+| `run_factor_evolution` | 运行多轮进化搜索 |
 | `list_experiment_history` | 查看实验历史 |
 | `get_experiment_detail` | 查看实验详情 |
 
-## 快速开始
+---
 
-### 安装依赖
+## Quick Start
+
+### 1) Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-主要依赖：`pandas >= 2.2.0`、`numpy >= 1.26.0`、`akshare >= 1.18.55`
+主要依赖：
 
-### 数据准备
+- `pandas >= 2.2.0`
+- `numpy >= 1.26.0`
+- `akshare >= 1.18.55`
+
+### 2) Refresh market data
 
 ```bash
-# 刷新沪深300横截面数据（多资产行情 + 元数据）
 python refresh_data.py
+```
 
-# 或只刷新 ETF 单资产行情
+如果你只想抓 ETF 数据：
+
+```bash
 python fetch_hs300_etf.py
 ```
 
-### 运行回测
+### 3) Run a backtest
 
 ```bash
 python run_backtest.py --data "data/hs300_etf.csv" --strategy ma_cross
 ```
 
-### 编程方式调用
+### 4) Use as an Agent runtime
 
 ```python
 from pathlib import Path
 from quantlab.config import BacktestConfig
 from quantlab.assistant.tools import AssistantToolRuntime
 
-rt = AssistantToolRuntime(BacktestConfig(), Path("data/hs300_cross_section.csv"))
+rt = AssistantToolRuntime(
+    BacktestConfig(),
+    Path("data/hs300_cross_section.csv")
+)
 
-# 生成因子假设
-result = rt.execute("generate_factor_hypotheses", {
+hypotheses = rt.execute("generate_factor_hypotheses", {
     "research_direction": "量价背离",
     "max_candidates": 5,
 })
 
-# 运行进化搜索
 result = rt.execute("run_factor_evolution", {
     "direction": "波动率调整动量",
     "max_rounds": 3,
     "candidates_per_round": 5,
 })
 
-# 单次因子发掘
-result = rt.execute("run_factor_discovery", {
+single_run = rt.execute("run_factor_discovery", {
     "factor_prompt": "量价背离",
 })
 ```
 
-## 因子发掘架构详解
+---
 
-### 因子假设生成器（hypothesis.py）
+## Data Pipeline
 
-融合 AlphaAgent 正则化探索 + Hubble DSL 约束 + FactorMiner Ralph Loop：
+当前数据链路面向 **沪深300横截面研究**：
 
-- **6 个因子族**：momentum / reversal / volatility / volume_price / liquidity / fundamental
-- **12 个 DSL 算子**：rank / zscore / delta / lag / mean / std / ts_rank / add / sub / mul / div / min / max / clip
-- **3 种模板策略**：基础时序算子组合、双特征交叉组合、波动率调整组合
-- **Retrieve-Adapt 循环**：从经验记忆和因子库提取相关模式，引导假设生成
-- **族感知多样性**：对过度集中的族施加惩罚，保证搜索覆盖面
-- **正则化探索**：对探索不足的方向给予奖励，避免同质化
+- 行情主数据：横截面多资产价格序列
+- 元数据补齐：简称 / 行业 / 市值 / 股本
+- 主来源：AkShare
+- 行业兜底：雪球个股资料接口
+- 对 `unknown` 行业资产支持自动重新抓取
 
-### 自主搜索循环（evolution.py）
+这意味着项目不只是“读一份 CSV”，而是已经具备了面向真实研究场景的数据刷新与修复能力。
 
-融合 QuantaAlpha 轨迹进化 + FactorMiner Ralph Loop + R&D-Agent-Quant 两阶段迭代：
+---
 
-- **轨迹级进化**：mutation（算子替换 / 窗口调整 / 子树交换）+ crossover（子树交叉）
-- **多轮闭环**：假设→执行→评估→进化→再假设
-- **早停机制**：连续 N 轮无改善自动终止
-- **经验自动记录**：成功模式 / 失败约束 / 观察结果持久化
+## AI / LLM Configuration
 
-### 统一数据层（datahub.py）
-
-借鉴 Qlib DataProvider 抽象：
-
-- **Provider 模式**：`LocalCSVProvider`（当前）→ 可扩展 `AkshareProvider` / `TushareProvider` / `WindProvider`
-- **数据质量报告**：资产数 / 行业覆盖率 / 市值覆盖率 / NaN 比率 / 最近刷新时间
-- **缓存复用**：加载后缓存，刷新后自动失效
-
-### 横截面评估体系（pipeline.py）
-
-- **Rank IC / ICIR**：因子排序预测能力
-- **分位单调性**：多空组合收益单调性
-- **稳定性评分**：时间序列 IC 一致性
-- **可交易性评分**：换手率与冲击成本考量
-- **综合评分**：加权合成，决策阈值 approved(>0.55) / observe(>0.25) / rejected
-
-### 数据获取层（data/fetcher.py）
-
-- **主来源**：akshare（`stock_individual_info_em`）
-- **兜底来源**：雪球个股资料（`stock_individual_basic_info_xq`）
-- **元数据缓存**：行业 / 简称 / 市值 / 股本自动补齐
-- **unknown 行业智能刷新**：缓存中行业仍为 unknown 的资产会自动重新抓取
-
-## AI Agent 配置
-
-支持两层配置来源（优先级从低到高）：
+支持两层配置来源，优先级从低到高：
 
 1. 项目根目录 `.env`
 2. 系统环境变量
@@ -221,27 +270,53 @@ ASSISTANT_API_KEY=your_api_key
 ASSISTANT_MODEL=gpt-5.4
 ```
 
-## 决策可信度机制
+---
 
-研究计划在执行前会经过可信度评估，决定后续执行路径：
+## Decision Gate
 
-- **pass**：正常执行原计划
-- **review_required**：降级为保守验证计划
-- **fail**：触发自动重规划，补齐缺失研究链路
+系统在执行研究计划前，会先做可信度评估，避免“生成一个计划就直接跑”。
 
-评估维度：计划可信度 / 执行可信度 / 结论可信度，每个维度都有验收阈值和闸门状态。
+决策分流为：
 
-## 参考框架
+- `pass`：直接执行
+- `review_required`：降级为更保守的验证路径
+- `fail`：自动重规划，补齐缺失链路
 
-本项目架构设计借鉴了以下开源框架的核心思路：
+评估维度包括：
 
-| 框架 | 借鉴点 |
-|------|--------|
-| [R&D-Agent-Quant](https://github.com/microsoft/RD-Agent) | Research→Development 两阶段迭代 |
+- 计划可信度
+- 执行可信度
+- 结论可信度
+
+---
+
+## Design References
+
+本项目当前架构主要借鉴以下框架：
+
+| Framework | Borrowed Ideas |
+|---|---|
+| [R&D-Agent-Quant](https://github.com/microsoft/RD-Agent) | Research → Development 两阶段迭代 |
 | [AlphaAgent](https://arxiv.org/abs/2502.16789) | LLM + 正则化探索 + 抗衰减评估 |
-| [QuantaAlpha](https://arxiv.org/abs/2602.07085) | 轨迹级 mutation/crossover 进化 |
-| [FactorMiner](https://arxiv.org/abs/2602.14670) | Ralph Loop (Retrieve→Adapt→Learn→Plan→Harvest) |
-| [Hubble](https://arxiv.org/abs/2604.09601) | DSL 约束生成 + AST 验证 + 族感知多样性 |
+| [QuantaAlpha](https://arxiv.org/abs/2602.07085) | 轨迹级 mutation / crossover 进化 |
+| [FactorMiner](https://arxiv.org/abs/2602.14670) | Ralph Loop: Retrieve → Adapt → Learn → Plan → Harvest |
+| [Hubble](https://arxiv.org/abs/2604.09601) | DSL 约束生成 + AST 校验 + 族感知多样性 |
+
+---
+
+## Roadmap
+
+- [x] 因子假设生成器
+- [x] 多轮进化搜索循环
+- [x] 统一数据抽象层 DataHub
+- [x] AssistantToolRuntime 正式工具接入
+- [x] 真实横截面闭环验证
+- [ ] 更长历史区间与更多标签期评估
+- [ ] 多因子筛选与组合层优化
+- [ ] 更强的经验记忆治理
+- [ ] 面向完整 Quant Agent 的任务编排能力
+
+---
 
 ## License
 
