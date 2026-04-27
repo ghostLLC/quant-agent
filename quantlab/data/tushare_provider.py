@@ -35,7 +35,15 @@ class TushareProProvider(DataProvider):
     """Tushare Pro 数据源。"""
 
     def __init__(self, token: str | None = None) -> None:
-        self._token = token or os.environ.get("TUSHARE_TOKEN", "")
+        if token is None:
+            token = os.environ.get("TUSHARE_TOKEN", "")
+        if not token:
+            try:
+                from quantlab.config import TUSHARE_TOKEN as _cfg_token
+                token = _cfg_token
+            except ImportError:
+                pass
+        self._token = token
         self._pro = None
         if self._token:
             try:

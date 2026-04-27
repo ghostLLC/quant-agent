@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
+TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
 REPORTS_DIR = BASE_DIR / "reports"
 LATEST_REPORT_DIR = REPORTS_DIR / "latest"
 HISTORY_REPORT_DIR = REPORTS_DIR / "history"
