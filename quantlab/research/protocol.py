@@ -12,6 +12,8 @@ SUPPORTED_TASK_TYPES = {
     "experiment_history",
     "experiment_detail",
     "factor_discovery",
+    "generate_factor_hypotheses",
+    "factor_evolution",
 }
 
 
@@ -21,4 +23,5 @@ def normalize_task_type(task_type: str) -> str:
         available = ", ".join(sorted(SUPPORTED_TASK_TYPES))
         raise ValueError(f"不支持的研究任务类型：{task_type}。当前支持：{available}")
     return normalized
+
 

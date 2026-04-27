@@ -4,13 +4,13 @@ import argparse
 from pathlib import Path
 
 from quantlab.backtest.engine import format_metrics
-from quantlab.config import BacktestConfig
+from quantlab.config import BacktestConfig, DEFAULT_PRICE_DATA_PATH
 from quantlab.pipeline import get_default_strategy_summary, run_single_backtest
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="运行沪深300 ETF 回测")
-    parser.add_argument("--data", required=True, help="CSV 数据文件绝对路径")
+    parser = argparse.ArgumentParser(description="运行兼容模式下的沪深300 ETF 单资产回测")
+    parser.add_argument("--data", default=str(DEFAULT_PRICE_DATA_PATH), help="CSV 数据文件绝对路径，默认使用 data/hs300_etf.csv")
     parser.add_argument("--strategy", default="ma_cross", help="策略名称，默认 ma_cross")
     parser.add_argument("--short-window", type=int, default=5, help="短均线窗口")
     parser.add_argument("--long-window", type=int, default=20, help="长均线窗口")
@@ -52,3 +52,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

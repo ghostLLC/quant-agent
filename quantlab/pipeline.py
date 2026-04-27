@@ -11,7 +11,7 @@ from quantlab.analysis.grid_search import run_parameter_grid
 from quantlab.analysis.history_store import load_experiment_detail, load_experiment_history, save_experiment_record
 from quantlab.analysis.validation import run_train_test_validation, run_walk_forward_validation, summarize_walk_forward_research_score
 from quantlab.backtest.engine import BacktestResult, export_backtest_result, run_long_only_backtest
-from quantlab.config import BacktestConfig, DEFAULT_DATA_PATH
+from quantlab.config import BacktestConfig, DEFAULT_CROSS_SECTION_DATA_PATH, DEFAULT_DATA_PATH, DEFAULT_PRICE_DATA_PATH
 from quantlab.data.fetcher import update_hs300_cross_section_csv, update_hs300_etf_csv
 from quantlab.data.loader import load_cross_section_data, load_price_data, summarize_cross_section_data, summarize_data
 
@@ -127,7 +127,8 @@ def build_signal_config(config: BacktestConfig, strategy_name: str = "ma_cross")
 
 
 def run_single_backtest(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
     strategy_name: str = "ma_cross",
 ) -> tuple[BacktestResult, dict, Path, Path]:
@@ -148,7 +149,8 @@ def run_single_backtest(
 
 
 def run_grid_experiment(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
     parameter_grid: dict[str, list] | None = None,
     strategy_name: str = "ma_cross",
@@ -172,7 +174,8 @@ def run_grid_experiment(
 
 
 def run_train_test_experiment(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
     parameter_grid: dict[str, list] | None = None,
     strategy_name: str = "ma_cross",
@@ -210,7 +213,8 @@ def run_train_test_experiment(
 
 
 def run_walk_forward_experiment(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
     parameter_grid: dict[str, list] | None = None,
     strategy_name: str = "ma_cross",
@@ -259,7 +263,7 @@ def run_walk_forward_experiment(
 
 
 
-def refresh_market_data(data_path: str | Path = DEFAULT_DATA_PATH) -> dict[str, object]:
+def refresh_market_data(data_path: str | Path = DEFAULT_PRICE_DATA_PATH) -> dict[str, object]:
     update_hs300_etf_csv(data_path)
 
     loaded = load_price_data(data_path)
@@ -336,7 +340,8 @@ def get_default_strategy_summary() -> dict[str, object]:
 
 
 def run_multi_strategy_compare(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
 ) -> dict[str, object]:
     config = config or BacktestConfig()
@@ -415,7 +420,8 @@ def run_multi_strategy_compare(
 
 
 def review_portfolio_construction(
-    data_path: str | Path = DEFAULT_DATA_PATH,
+    data_path: str | Path = DEFAULT_PRICE_DATA_PATH,
+
     config: BacktestConfig | None = None,
 ) -> dict[str, object]:
     config = config or BacktestConfig()

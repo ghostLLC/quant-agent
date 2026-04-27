@@ -15,14 +15,18 @@ from quantlab.config import BacktestConfig
 from quantlab.data.loader import load_cross_section_data, load_price_data, summarize_cross_section_data, summarize_data
 
 from quantlab.factor_discovery import (
+    DataHub,
+    EvolutionConfig,
     FactorDependency,
     FactorDirection,
     FactorDiscoveryOrchestrator,
+    FactorEvolutionLoop,
     FactorHypothesisGenerator,
     FactorNode,
     FactorSpec,
     HypothesisRequest,
 )
+
 from quantlab.pipeline import (
     get_experiment_detail,
     get_experiment_history,
@@ -47,6 +51,9 @@ class ResearchTaskExecutor:
         self.evaluator = ResearchDecisionEvaluator()
         self.factor_history_dir = MEMORY_DIR / "factor_discovery_runs"
         self.factor_history_dir.mkdir(parents=True, exist_ok=True)
+        self.datahub = DataHub()
+        self.hypothesis_generator = FactorHypothesisGenerator()
+
 
     def _build_task_result(
         self,
@@ -188,11 +195,89 @@ class ResearchTaskExecutor:
             payload, history_path = self._run_factor_discovery_task(task, active_data_path)
             return self._build_task_result(task, payload, history_path)
 
+        if task_type == "generate_factor_hypotheses":
+            payload = self._run_generate_factor_hypotheses_task(task)
+            return self._build_task_result(task, payload)
+
+        if task_type == "factor_evolution":
+            payload, history_path = self._run_factor_evolution_task(task, active_data_path)
+            return self._build_task_result(task, payload, history_path)
+
         raise ValueError(f"未知研究任务类型：{task_type}")
 
+    def _run_generate_factor_hypotheses_task(self, task: ResearchTask) -> dict[str, Any]:
+        metadata = task.metadata or {}
+        research_direction = str(metadata.get("research_direction") or metadata.get("factor_prompt") or "").strip()
+        if not research_direction:
+            raise ValueError("research_direction 不能为空")
+
+        request = HypothesisRequest(
+            research_direction=research_direction,
+            max_candidates=int(metadata.get("max_candidates", 5) or 5),
+            exclude_families=list(metadata.get("exclude_families") or []),
+            focus_features=metadata.get("focus_features") or None,
+        )
+        candidates = self.hypothesis_generator.generate(request)
+        return {
+            "research_direction": research_direction,
+            "candidate_count": len(candidates),
+            "candidates": [
+                {
+                    "factor_id": candidate.spec.factor_id,
+                    "name": candidate.spec.name,
+                    "family": candidate.family_match,
+                    "direction": candidate.spec.direction.value if candidate.spec.direction else "unknown",
+                    "novelty_score": candidate.novelty_score,
+                    "exploration_bonus": candidate.exploration_bonus,
+                    "rationale": candidate.rationale,
+                    "hypothesis": candidate.spec.hypothesis,
+                    "dependencies": [dependency.field_name for dependency in candidate.spec.dependencies],
+                    "expression_root": candidate.spec.expression_tree.node_type if candidate.spec.expression_tree else None,
+                }
+                for candidate in candidates
+            ],
+        }
+
+    def _run_factor_evolution_task(self, task: ResearchTask, data_path: Path) -> tuple[dict[str, Any], str]:
+        metadata = task.metadata or {}
+        direction = str(metadata.get("direction") or metadata.get("factor_prompt") or "").strip()
+        if not direction:
+            raise ValueError("direction 不能为空")
+
+        market_df, market_summary = self._load_factor_market_frame(data_path, allow_proxy=False)
+        evolution_config = EvolutionConfig(
+            max_rounds=int(metadata.get("max_rounds", 5) or 5),
+            candidates_per_round=int(metadata.get("candidates_per_round", 5) or 5),
+            mutation_rate=float(metadata.get("mutation_rate", 0.3) or 0.3),
+            score_threshold_approve=float(metadata.get("score_threshold_approve", 0.55) or 0.55),
+        )
+        loop = FactorEvolutionLoop(
+            hypothesis_generator=self.hypothesis_generator,
+            config=evolution_config,
+        )
+        result = loop.run(direction=direction, market_df=market_df, config=evolution_config)
+        trajectory = dict(result.get("trajectory", {}) or {})
+        payload = {
+            "direction": direction,
+            "data_summary": market_summary,
+            "total_candidates": result["total_candidates"],
+            "approved_count": result["approved_count"],
+            "observed_count": result["observed_count"],
+            "rejected_count": result["rejected_count"],
+            "best_score": result["best_score"],
+            "rounds_completed": len(result.get("rounds", [])),
+            "trajectory": trajectory,
+            "rounds": result.get("rounds", []),
+        }
+        history_path = self._save_evolution_history(direction, payload)
+        return payload, history_path
+
     def _run_factor_discovery_task(self, task: ResearchTask, data_path: Path) -> tuple[dict[str, Any], str]:
+
+
         spec = self._build_factor_spec(task)
-        market_df, market_summary = self._load_factor_market_frame(data_path)
+        market_df, market_summary = self._load_factor_market_frame(data_path, allow_proxy=False)
+
         orchestrator = FactorDiscoveryOrchestrator()
         closed_loop = orchestrator.run_closed_loop(spec, market_df=market_df)
         report = closed_loop["report"]
@@ -238,12 +323,12 @@ class ResearchTaskExecutor:
 
         # 用 FactorHypothesisGenerator 替代硬编码模板
         prompt = str(task.metadata.get("factor_prompt", "") or task.task_type).strip()
-        generator = FactorHypothesisGenerator()
         request = HypothesisRequest(
             research_direction=prompt,
             max_candidates=1,
         )
-        candidates = generator.generate(request)
+        candidates = self.hypothesis_generator.generate(request)
+
 
         if candidates:
             # 选综合评分最高的候选
@@ -292,13 +377,19 @@ class ResearchTaskExecutor:
             return json.loads(stripped)
         raise ValueError("factor_spec 仅支持 dict 或 JSON 字符串")
 
-    def _load_factor_market_frame(self, data_path: Path) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def _load_factor_market_frame(self, data_path: Path, allow_proxy: bool = False) -> tuple[pd.DataFrame, dict[str, Any]]:
         raw = pd.read_csv(data_path)
         if {"date", "asset", "close", "volume"}.issubset(raw.columns):
             market_df = load_cross_section_data(data_path)
             summary = summarize_cross_section_data(market_df)
             summary["source_mode"] = "direct_cross_section"
             return market_df, summary
+
+        if not allow_proxy:
+            raise ValueError(
+                "当前数据不是正式横截面数据，已拒绝使用单资产代理样本继续研究。"
+                "请先刷新或指定真实的 hs300_cross_section.csv 后再运行因子发掘/进化任务。"
+            )
 
         single_asset_df = load_price_data(data_path)
         market_df = self._expand_single_asset_frame(single_asset_df)
@@ -307,9 +398,10 @@ class ResearchTaskExecutor:
             "source_mode": "proxy_cross_section_from_single_asset",
             "asset_count": int(market_df["asset"].nunique()),
             "rows": int(len(market_df)),
-            "note": "当前原始样本是单资产行情，这里基于真实时间序列扩展为代理横截面样本，用于先跑通因子发掘闭环。",
+            "note": "当前原始样本是单资产行情，这里基于真实时间序列扩展为代理横截面样本，仅用于临时链路验证，不应用于正式研究结论。",
         }
         return market_df, summary
+
 
 
     def _expand_single_asset_frame(self, price_df: pd.DataFrame) -> pd.DataFrame:
@@ -348,5 +440,11 @@ class ResearchTaskExecutor:
         target.write_text(json.dumps(self._make_json_safe(payload), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         return str(target)
 
+    def _save_evolution_history(self, direction: str, payload: dict[str, Any]) -> str:
+        target = self.factor_history_dir / f"evolution__{direction[:24].strip().replace(' ', '_') or 'direction'}__{uuid4().hex[:8]}.json"
+        target.write_text(json.dumps(self._make_json_safe(payload), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return str(target)
+
     def _make_json_safe(self, payload: Any) -> Any:
         return json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+
