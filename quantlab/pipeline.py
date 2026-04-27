@@ -300,6 +300,16 @@ def refresh_cross_section_data(
     return summary
 
 
+def incremental_refresh_cross_section_data(
+    data_path: str | Path,
+) -> dict[str, object]:
+    """增量刷新横截面数据：只拉取现有数据之后的新交易日。"""
+    from quantlab.data.tushare_provider import AkShareIncrementalProvider
+    provider = AkShareIncrementalProvider()
+    result = provider.refresh_cross_section(Path(data_path))
+    return result
+
+
 
 
 

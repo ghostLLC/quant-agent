@@ -28,6 +28,7 @@ from .runtime import FactorExperienceMemory, PersistentFactorStore, SafeFactorEx
 from .hypothesis import FactorHypothesisGenerator, HypothesisCandidate, HypothesisRequest
 from .evolution import FactorEvolutionLoop, EvolutionConfig, Trajectory, TrajectoryStep
 from .datahub import DataHub, DataQualityReport, DataProvider, LocalCSVProvider
+from .factor_report import FactorDeliveryReport, FactorDeliveryReportGenerator
 
 __all__ = [
     "AgentRole",
@@ -71,4 +72,7 @@ __all__ = [
     "DataQualityReport",
     "DataProvider",
     "LocalCSVProvider",
+    # 因子交付
+    "FactorDeliveryReport",
+    "FactorDeliveryReportGenerator",
 ]

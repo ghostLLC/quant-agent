@@ -158,6 +158,12 @@ class DataHub:
         df = hub.load("D:/quant-agent/data/hs300_cross_section.csv")
         report = hub.quality("D:/quant-agent/data/hs300_cross_section.csv")
         hub.refresh("D:/quant-agent/data/hs300_cross_section.csv")
+
+    支持多数据源：
+        hub = DataHub()
+        hub.register_provider(TushareProProvider(token="..."))
+        hub.refresh("...", provider_name="tushare_pro")  # 用 Tushare 批量拉取
+        hub.refresh("...", provider_name="akshare_incremental")  # 增量更新
     """
 
     def __init__(self, default_provider: DataProvider | None = None) -> None:
@@ -165,6 +171,23 @@ class DataHub:
         self._cache: dict[str, pd.DataFrame] = {}
         self._default = default_provider or LocalCSVProvider()
         self.register_provider(self._default)
+        # 自动注册可选 Provider
+        self._register_optional_providers()
+
+    def _register_optional_providers(self) -> None:
+        """注册可选数据源（如 Tushare Pro、AkShare 增量）。"""
+        try:
+            from quantlab.data.tushare_provider import TushareProProvider
+            provider = TushareProProvider()
+            if provider.available:
+                self.register_provider(provider)
+        except Exception:
+            pass
+        try:
+            from quantlab.data.tushare_provider import AkShareIncrementalProvider
+            self.register_provider(AkShareIncrementalProvider())
+        except Exception:
+            pass
 
     def register_provider(self, provider: DataProvider) -> None:
         self._providers[provider.name()] = provider

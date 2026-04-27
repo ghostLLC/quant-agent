@@ -16,9 +16,11 @@ from quantlab.factor_discovery import (
     FactorSpec,
     HypothesisRequest,
 )
+from quantlab.factor_discovery.factor_report import FactorDeliveryReportGenerator
 from quantlab.pipeline import get_default_strategy_summary, get_strategy_catalog
 from quantlab.research.executor import ResearchTaskExecutor
 from quantlab.research.models import ResearchTask
+from quantlab.trading import FactorPortfolioSimulator, PortfolioWeightScheme
 
 
 
@@ -184,6 +186,48 @@ class AssistantToolRuntime:
                     "required": ["experiment_id"],
                 },
             },
+            {
+                "type": "function",
+                "name": "simulate_factor_portfolio",
+                "description": "对因子运行模拟交易：因子信号→组合构建→模拟盘（含交易成本）→绩效报告。适合评估因子扣费后的真实可交易性。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "factor_id": {"type": "string", "description": "因子ID（需已有因子面板）"},
+                        "n_long": {"type": "integer", "description": "多头持仓数量，默认50"},
+                        "weight_scheme": {"type": "string", "description": "权重方案: equal / score / sector_neutral", "default": "equal"},
+                        "rebalance_freq": {"type": "integer", "description": "调仓频率（天），默认1", "default": 1},
+                    },
+                    "required": ["factor_id"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "generate_factor_delivery_report",
+                "description": "生成 WorldQuant 风格的因子交付报告（含IC指标、扣费绩效、容量估算、正交性、风险提示），可直接提交给买方。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "factor_id": {"type": "string", "description": "因子ID"},
+                        "n_long": {"type": "integer", "description": "模拟组合持仓数，默认50"},
+                        "output_dir": {"type": "string", "description": "输出目录（可选）"},
+                    },
+                    "required": ["factor_id"],
+                },
+            },
+            {
+                "type": "function",
+                "name": "incremental_refresh_data",
+                "description": "增量更新横截面数据（只拉取新交易日），比全量刷新快得多。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "data_path": {"type": "string"},
+                        "provider": {"type": "string", "description": "数据源: akshare_incremental / tushare_pro", "default": "akshare_incremental"},
+                    },
+                    "required": [],
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -218,6 +262,12 @@ class AssistantToolRuntime:
             return self._list_experiment_history(arguments)
         if name == "get_experiment_detail":
             return self._get_experiment_detail(arguments)
+        if name == "simulate_factor_portfolio":
+            return self._simulate_factor_portfolio(arguments)
+        if name == "generate_factor_delivery_report":
+            return self._generate_factor_delivery_report(arguments)
+        if name == "incremental_refresh_data":
+            return self._incremental_refresh_data(arguments)
         raise ValueError(f"未知工具：{name}")
 
 
@@ -474,4 +524,124 @@ class AssistantToolRuntime:
             result["history_path"] = history_path
         if credibility:
             result["credibility_assessment"] = credibility
+        return result
+
+    def _simulate_factor_portfolio(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """模拟因子组合交易（含成本）。"""
+        factor_id = str(arguments.get("factor_id", "")).strip()
+        if not factor_id:
+            raise ValueError("factor_id 不能为空")
+
+        n_long = int(arguments.get("n_long", 50) or 50)
+        weight_scheme_str = str(arguments.get("weight_scheme", "equal") or "equal")
+        rebalance_freq = int(arguments.get("rebalance_freq", 1) or 1)
+
+        try:
+            weight_scheme = PortfolioWeightScheme(weight_scheme_str)
+        except ValueError:
+            weight_scheme = PortfolioWeightScheme.EQUAL
+
+        # 加载市场数据
+        market_df = self.datahub.load(self.data_path, use_cache=True)
+
+        # 生成因子面板（通过已有因子评估流程获取）
+        # 简化：直接运行一次因子发现来获取因子面板
+        from quantlab.factor_discovery.runtime import SafeFactorExecutor
+        from quantlab.factor_discovery.pipeline import FactorDiscoveryOrchestrator
+
+        orchestrator = FactorDiscoveryOrchestrator()
+        # 如果有因子库记录，直接使用
+        library = orchestrator.store.list_library()
+        target_entry = None
+        for entry in library:
+            if entry.factor_spec.factor_id == factor_id:
+                target_entry = entry
+                break
+
+        if target_entry is None:
+            raise ValueError(f"因子 {factor_id} 不在因子库中，请先运行因子发掘")
+
+        spec = target_entry.factor_spec
+        executor = SafeFactorExecutor()
+        computed = executor.execute(spec, market_df)
+        factor_panel = computed["factor_panel"]
+
+        # 模拟交易
+        simulator = FactorPortfolioSimulator(
+            n_long=n_long,
+            weight_scheme=weight_scheme,
+            rebalance_freq=rebalance_freq,
+        )
+        result = simulator.simulate(factor_panel, market_df)
+
+        return {
+            "factor_id": factor_id,
+            "factor_name": spec.name,
+            "simulation_summary": result.summary(),
+            "simulation_details": result.to_dict(),
+        }
+
+    def _generate_factor_delivery_report(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """生成因子交付报告。"""
+        factor_id = str(arguments.get("factor_id", "")).strip()
+        if not factor_id:
+            raise ValueError("factor_id 不能为空")
+
+        n_long = int(arguments.get("n_long", 50) or 50)
+        output_dir = arguments.get("output_dir")
+
+        market_df = self.datahub.load(self.data_path, use_cache=True)
+
+        # 获取因子规格和面板
+        from quantlab.factor_discovery.pipeline import FactorDiscoveryOrchestrator
+        from quantlab.factor_discovery.runtime import SafeFactorExecutor
+
+        orchestrator = FactorDiscoveryOrchestrator()
+        library = orchestrator.store.list_library()
+        target_entry = None
+        evaluation_report = None
+        for entry in library:
+            if entry.factor_spec.factor_id == factor_id:
+                target_entry = entry
+                evaluation_report = entry.latest_report
+                break
+
+        if target_entry is None:
+            raise ValueError(f"因子 {factor_id} 不在因子库中")
+
+        spec = target_entry.factor_spec
+        executor = SafeFactorExecutor()
+        computed = executor.execute(spec, market_df)
+        factor_panel = computed["factor_panel"]
+
+        # 生成报告
+        generator = FactorDeliveryReportGenerator(n_long=n_long)
+        report = generator.generate(
+            factor_spec=spec,
+            factor_panel=factor_panel,
+            market_df=market_df,
+            evaluation_report=evaluation_report,
+            output_dir=output_dir,
+        )
+
+        return {
+            "factor_id": factor_id,
+            "factor_name": spec.name,
+            "report_summary": {
+                "rank_ic_mean": report.rank_ic_mean,
+                "icir": report.icir,
+                "net_return": report.simulation.get("net_return", 0.0),
+                "sharpe": report.simulation.get("sharpe_ratio", 0.0),
+                "avg_turnover": report.avg_daily_turnover,
+                "risk_flags": report.risk_flags,
+            },
+            "markdown_preview": report.to_markdown()[:2000],
+        }
+
+    def _incremental_refresh_data(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """增量更新横截面数据。"""
+        data_path = Path(arguments.get("data_path") or self.data_path)
+        provider_name = str(arguments.get("provider", "akshare_incremental") or "akshare_incremental")
+
+        result = self.datahub.refresh(data_path, provider_name=provider_name)
         return result
