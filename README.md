@@ -304,6 +304,20 @@ ASSISTANT_MODEL=gpt-5.4
 
 ---
 
+## Changelog
+
+### 2026-04-27 — 主线统一重构
+- `DEFAULT_DATA_PATH` 拆为 `DEFAULT_CROSS_SECTION_DATA_PATH` + `DEFAULT_PRICE_DATA_PATH`，全局默认指向横截面
+- 所有回测函数默认走 ETF 兼容路径，避免横截面默认值污染单资产回测
+- `SUPPORTED_TASK_TYPES` 补齐 `generate_factor_hypotheses` + `factor_evolution`
+- Executor 新增假设生成与因子进化两个任务分支
+- 单资产代理横截面默认禁止（`allow_proxy=False`），阻止单资产数据进入正式因子研究
+- 助手系统提示改为"横截面因子优先、单资产回测兼容"双模式
+- `refresh_data.py` 改为刷新横截面数据；`run_backtest.py` 标记为兼容 CLI
+- `data/README.md` / `knowledge/README.md` 重写为因子发掘主线定位
+
+---
+
 ## Roadmap
 
 - [x] 因子假设生成器
@@ -311,6 +325,7 @@ ASSISTANT_MODEL=gpt-5.4
 - [x] 统一数据抽象层 DataHub
 - [x] AssistantToolRuntime 正式工具接入
 - [x] 真实横截面闭环验证
+- [x] 主线统一：全局默认指向横截面因子发掘，回测降级为兼容模式
 - [ ] 更长历史区间与更多标签期评估
 - [ ] 多因子筛选与组合层优化
 - [ ] 更强的经验记忆治理
