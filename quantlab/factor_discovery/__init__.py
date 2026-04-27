@@ -29,6 +29,8 @@ from .hypothesis import FactorHypothesisGenerator, HypothesisCandidate, Hypothes
 from .evolution import FactorEvolutionLoop, EvolutionConfig, Trajectory, TrajectoryStep
 from .datahub import DataHub, DataQualityReport, DataProvider, LocalCSVProvider
 from .factor_report import FactorDeliveryReport, FactorDeliveryReportGenerator
+from .decay_monitor import FactorDecayMonitor, DecayCheckResult, DecayMonitorSummary
+from .delivery_screener import DeliveryScreener, ScreeningResult, ScreeningSummary
 
 __all__ = [
     "AgentRole",
@@ -75,4 +77,12 @@ __all__ = [
     # 因子交付
     "FactorDeliveryReport",
     "FactorDeliveryReportGenerator",
+    # 衰减监控
+    "FactorDecayMonitor",
+    "DecayCheckResult",
+    "DecayMonitorSummary",
+    # 交付筛选
+    "DeliveryScreener",
+    "ScreeningResult",
+    "ScreeningSummary",
 ]

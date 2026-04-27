@@ -228,6 +228,60 @@ class AssistantToolRuntime:
                     "required": [],
                 },
             },
+            {
+                "type": "function",
+                "name": "check_factor_decay",
+                "description": "检查因子库中所有因子的衰减状态：近期IC vs 全样本IC，标记衰减因子并建议动作（监控/重评估/再发掘/归档）。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "data_path": {"type": "string"},
+                        "recent_window": {"type": "integer", "description": "近期IC窗口（交易日），默认20"},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "type": "function",
+                "name": "screen_deliverable_factors",
+                "description": "按WorldQuant交付标准自动筛选因子：ICIR>1.0、正交性<0.3、换手<50%、容量>500万等，只输出可卖因子。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "data_path": {"type": "string"},
+                        "min_icir": {"type": "number", "description": "最低ICIR，默认1.0"},
+                        "max_library_correlation": {"type": "number", "description": "最大库内相关性，默认0.3"},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "type": "function",
+                "name": "run_daily_schedule",
+                "description": "执行一次完整的每日因子工厂调度：增量刷新→衰减监控→进化搜索→交付筛选→报告生成。无人值守一键运行。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "data_path": {"type": "string"},
+                        "directions": {"type": "array", "items": {"type": "string"}, "description": "搜索方向列表"},
+                        "evolution_rounds": {"type": "integer", "description": "每方向进化轮数，默认3"},
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "type": "function",
+                "name": "install_daily_cron",
+                "description": "安装Windows计划任务，每日定时自动运行因子工厂（默认18:30）。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "hour": {"type": "integer", "description": "执行小时，默认18"},
+                        "minute": {"type": "integer", "description": "执行分钟，默认30"},
+                    },
+                    "required": [],
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -268,6 +322,14 @@ class AssistantToolRuntime:
             return self._generate_factor_delivery_report(arguments)
         if name == "incremental_refresh_data":
             return self._incremental_refresh_data(arguments)
+        if name == "check_factor_decay":
+            return self._check_factor_decay(arguments)
+        if name == "screen_deliverable_factors":
+            return self._screen_deliverable_factors(arguments)
+        if name == "run_daily_schedule":
+            return self._run_daily_schedule(arguments)
+        if name == "install_daily_cron":
+            return self._install_daily_cron(arguments)
         raise ValueError(f"未知工具：{name}")
 
 
@@ -551,7 +613,7 @@ class AssistantToolRuntime:
 
         orchestrator = FactorDiscoveryOrchestrator()
         # 如果有因子库记录，直接使用
-        library = orchestrator.store.list_library()
+        library = orchestrator.store.load_library_entries()
         target_entry = None
         for entry in library:
             if entry.factor_spec.factor_id == factor_id:
@@ -597,7 +659,7 @@ class AssistantToolRuntime:
         from quantlab.factor_discovery.runtime import SafeFactorExecutor
 
         orchestrator = FactorDiscoveryOrchestrator()
-        library = orchestrator.store.list_library()
+        library = orchestrator.store.load_library_entries()
         target_entry = None
         evaluation_report = None
         for entry in library:
@@ -645,3 +707,48 @@ class AssistantToolRuntime:
 
         result = self.datahub.refresh(data_path, provider_name=provider_name)
         return result
+
+    def _check_factor_decay(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """检查因子衰减。"""
+        from quantlab.factor_discovery.decay_monitor import FactorDecayMonitor
+        data_path = Path(arguments.get("data_path") or self.data_path)
+        recent_window = int(arguments.get("recent_window", 20) or 20)
+
+        monitor = FactorDecayMonitor(data_path=data_path, recent_window=recent_window)
+        return monitor.check_all()
+
+    def _screen_deliverable_factors(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """筛选可交付因子。"""
+        from quantlab.factor_discovery.delivery_screener import DeliveryScreener
+        data_path = Path(arguments.get("data_path") or self.data_path)
+        min_icir = float(arguments.get("min_icir", 1.0) or 1.0)
+        max_corr = float(arguments.get("max_library_correlation", 0.3) or 0.3)
+
+        screener = DeliveryScreener(
+            data_path=data_path,
+            min_icir=min_icir,
+            max_library_correlation=max_corr,
+        )
+        return screener.screen()
+
+    def _run_daily_schedule(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """执行一次日常调度。"""
+        from quantlab.scheduler import DailyScheduler
+        data_path = Path(arguments.get("data_path") or self.data_path)
+        directions = arguments.get("directions")
+        rounds = int(arguments.get("evolution_rounds", 3) or 3)
+
+        scheduler = DailyScheduler(
+            data_path=data_path,
+            directions=directions,
+            evolution_rounds=rounds,
+        )
+        record = scheduler.run_daily()
+        return record.to_dict()
+
+    def _install_daily_cron(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """安装每日定时任务。"""
+        from quantlab.scheduler import install_windows_task
+        hour = int(arguments.get("hour", 18) or 18)
+        minute = int(arguments.get("minute", 30) or 30)
+        return install_windows_task(hour=hour, minute=minute)
