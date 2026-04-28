@@ -31,6 +31,12 @@ from .datahub import DataHub, DataQualityReport, DataProvider, LocalCSVProvider
 from .factor_report import FactorDeliveryReport, FactorDeliveryReportGenerator
 from .decay_monitor import FactorDecayMonitor, DecayCheckResult, DecayMonitorSummary
 from .delivery_screener import DeliveryScreener, ScreeningResult, ScreeningSummary
+from .blocks import (
+    Block, DataBlock, TransformBlock, CombineBlock, RelationalBlock, FilterBlock,
+    BlockExecutor, OperatorRegistry, FactorHypothesis, ProgrammingPlan, CustomRequest,
+    data, transform, combine, relational, filter_block,
+)
+from .sample_split import SampleSplitter, SplitResult
 
 __all__ = [
     "AgentRole",
@@ -85,4 +91,24 @@ __all__ = [
     "DeliveryScreener",
     "ScreeningResult",
     "ScreeningSummary",
+    # 积木体系
+    "Block",
+    "DataBlock",
+    "TransformBlock",
+    "CombineBlock",
+    "RelationalBlock",
+    "FilterBlock",
+    "BlockExecutor",
+    "OperatorRegistry",
+    "FactorHypothesis",
+    "ProgrammingPlan",
+    "CustomRequest",
+    "data",
+    "transform",
+    "combine",
+    "relational",
+    "filter_block",
+    # 样本外拆分
+    "SampleSplitter",
+    "SplitResult",
 ]
