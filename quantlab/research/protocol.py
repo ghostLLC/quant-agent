@@ -14,6 +14,7 @@ SUPPORTED_TASK_TYPES = {
     "factor_discovery",
     "generate_factor_hypotheses",
     "factor_evolution",
+    "multi_agent_discovery",
 }
 
 

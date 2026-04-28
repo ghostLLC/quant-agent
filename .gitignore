@@ -24,9 +24,25 @@ assistant_data/memory/factor_discovery_runs/
 assistant_data/memory/factor_discovery/panels/
 assistant_data/memory/sessions/
 assistant_data/memory/summaries/
+assistant_data/multi_agent_runs/
+assistant_data/experience_loop/
+data/scheduler/
+data/delivery_reports/
 
-# 临时测试脚本
-test_*.py
+# 根目录临时测试脚本（tests/ 目录下的正式测试除外）
+/test_*.py
+/verify_*.py
+/check_data.py
+/patch_*.py
+/pull_*.py
+
+# 工具缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Claude Code local settings
+.claude/
 
 # IDE
 .idea/

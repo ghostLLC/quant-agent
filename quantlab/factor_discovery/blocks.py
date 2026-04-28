@@ -77,6 +77,7 @@ class OperatorRegistry:
         # 递推类
         "ema": {"arity": 1, "group_aware": False, "params": ["alpha"], "desc": "指数移动平均"},
         "rolling_ols_residual": {"arity": 1, "group_aware": False, "params": ["window"], "desc": "滚动 OLS 对市场回归取残差"},
+        "constant": {"arity": 0, "group_aware": False, "params": ["value"], "desc": "常量值（忽略输入，返回固定标量）"},
     }
 
     # Combine 算子
@@ -555,6 +556,11 @@ class BlockExecutor:
                 lambda x: (x.rank(ascending=True) <= n).astype(float)
             )
 
+        # 条件类
+        elif op == "constant":
+            value = float(params.get("value", 0.0))
+            return pd.Series(value, index=df.index, dtype=float)
+
         # 递推类
         elif op == "ema":
             alpha = float(params.get("alpha", 0.1))
@@ -759,3 +765,121 @@ def relational(op: str, input_block: Block, **params) -> RelationalBlock:
 def filter_block(op: str, input_block: Block, cond_block: Block | None = None) -> FilterBlock:
     """快捷构造筛选积木。"""
     return FilterBlock(op=op, input_block=input_block, cond_block=cond_block)
+
+
+# ── FactorNode ↔ Block 转换器 ──────────────────────────────────
+
+# FactorNode node_type → Block operator name mapping
+_FACTOR_NODE_OP_MAP: dict[str, str] = {
+    "add": "add",
+    "sub": "sub",
+    "mul": "mul",
+    "div": "div",
+    "rank": "rank",
+    "zscore": "zscore",
+    "delta": "delta",
+    "lag": "lag",
+    "mean": "ts_mean",
+    "std": "ts_std",
+    "ts_rank": "ts_rank",
+    "min": "ts_min",
+    "max": "ts_max",
+    "clip": "clip",
+    "constant": "constant",
+}
+
+# Arity: 1 = TransformBlock, 2 = CombineBlock
+_FACTOR_NODE_ARITY: dict[str, int] = {
+    "add": 2, "sub": 2, "mul": 2, "div": 2,
+    "rank": 1, "zscore": 1, "delta": 1, "lag": 1,
+    "mean": 1, "std": 1, "ts_rank": 1,
+    "min": 1, "max": 1, "clip": 1, "constant": 0,
+}
+
+
+def factor_node_to_block(fn: "FactorNode") -> Block:
+    """将 FactorNode 表达树转换为 Block 积木树。
+
+    映射规则：
+    - feature → DataBlock
+    - constant → TransformBlock(op="constant", params={"value": ...})
+    - 单子节点算子（rank, zscore, delta, mean, std, ts_rank, clip 等）→ TransformBlock
+    - 双子节点算子（add, sub, mul, div）→ CombineBlock
+    """
+    from .models import FactorNode as FN
+
+    node_type = fn.node_type
+
+    if node_type == "feature":
+        return DataBlock(field_name=str(fn.value or ""))
+
+    if node_type == "constant":
+        return TransformBlock(
+            op="constant",
+            input_block=DataBlock(field_name="close"),  # dummy input, ignored
+            params={"value": float(fn.value or 0.0)},
+        )
+
+    block_op = _FACTOR_NODE_OP_MAP.get(node_type)
+    if block_op is None:
+        raise ValueError(f"FactorNode 算子 {node_type} 无法映射到 Block")
+
+    arity = _FACTOR_NODE_ARITY.get(node_type, len(fn.children))
+    child_blocks = [factor_node_to_block(c) for c in fn.children]
+
+    if arity == 0:
+        return TransformBlock(
+            op=block_op,
+            input_block=DataBlock(field_name="close"),
+            params={**fn.params},
+        )
+
+    if arity == 1:
+        return TransformBlock(
+            op=block_op,
+            input_block=child_blocks[0],
+            params={**fn.params},
+        )
+
+    # arity == 2
+    return CombineBlock(
+        op=block_op,
+        left=child_blocks[0],
+        right=child_blocks[1] if len(child_blocks) > 1 else child_blocks[0],
+    )
+
+
+def block_to_factor_node(block: Block) -> "FactorNode":
+    """将 Block 积木树转换回 FactorNode 表达树。"""
+    from .models import FactorNode as FN
+
+    if isinstance(block, DataBlock):
+        return FN(node_type="feature", value=block.field_name)
+
+    if isinstance(block, TransformBlock):
+        op = block.op
+        if op == "constant":
+            return FN(
+                node_type="constant",
+                value=float(block.params.get("value", 0.0)),
+            )
+        # Reverse map: ts_mean → mean, ts_std → std, etc.
+        reverse_map = {
+            "ts_mean": "mean", "ts_std": "std", "ts_rank": "ts_rank",
+            "ts_min": "min", "ts_max": "max",
+        }
+        fn_type = reverse_map.get(op, op)
+        return FN(
+            node_type=fn_type,
+            children=[block_to_factor_node(block.input_block)],
+            params={**block.params},
+        )
+
+    if isinstance(block, CombineBlock):
+        return FN(
+            node_type=block.op,
+            children=[block_to_factor_node(block.left), block_to_factor_node(block.right)],
+        )
+
+    raise ValueError(f"未知 Block 类型: {type(block)}")
+

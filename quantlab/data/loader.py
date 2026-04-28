@@ -28,6 +28,11 @@ def load_price_data(file_path: str | Path) -> pd.DataFrame:
 
 def load_cross_section_data(file_path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(file_path)
+
+    # Normalize ts_code → asset (strip exchange suffix: 000001.SZ → 000001)
+    if "asset" not in df.columns and "ts_code" in df.columns:
+        df["asset"] = df["ts_code"].astype(str).str[:6]
+
     missing = [col for col in CROSS_SECTION_REQUIRED_COLUMNS if col not in df.columns]
     if missing:
         raise ValueError(f"横截面数据缺少必要字段: {missing}")

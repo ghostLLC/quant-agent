@@ -282,6 +282,21 @@ class AssistantToolRuntime:
                     "required": [],
                 },
             },
+            {
+                "type": "function",
+                "name": "run_multi_agent_discovery",
+                "description": "运行三团队多Agent协作因子发掘：R1(LLM假设生成)+R2(对抗审查)→P1(架构)+P2(积木组装)+P3(定制编码)→T1(回测)+T2(验证)。支持LLM深度推理。",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "direction": {"type": "string", "description": "搜索方向，如'波动率调整动量'、'量价背离'"},
+                        "data_path": {"type": "string"},
+                        "max_r1_r2_rounds": {"type": "integer", "description": "R1↔R2对抗轮数，默认2"},
+                        "max_candidates_per_round": {"type": "integer", "description": "每轮候选数，默认3"},
+                    },
+                    "required": ["direction"],
+                },
+            },
         ]
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -330,6 +345,8 @@ class AssistantToolRuntime:
             return self._run_daily_schedule(arguments)
         if name == "install_daily_cron":
             return self._install_daily_cron(arguments)
+        if name == "run_multi_agent_discovery":
+            return self._run_multi_agent_discovery(arguments)
         raise ValueError(f"未知工具：{name}")
 
 
@@ -752,3 +769,21 @@ class AssistantToolRuntime:
         hour = int(arguments.get("hour", 18) or 18)
         minute = int(arguments.get("minute", 30) or 30)
         return install_windows_task(hour=hour, minute=minute)
+
+    def _run_multi_agent_discovery(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """运行三团队多Agent协作因子发掘。"""
+        direction = str(arguments.get("direction", "")).strip()
+        if not direction:
+            return {"error": "direction 不能为空"}
+        data_path = Path(str(arguments.get("data_path") or self.data_path))
+        task = ResearchTask(
+            task_type="multi_agent_discovery",
+            data_path=data_path,
+            metadata={
+                "direction": direction,
+                "max_r1_r2_rounds": int(arguments.get("max_r1_r2_rounds", 2) or 2),
+                "max_candidates_per_round": int(arguments.get("max_candidates_per_round", 3) or 3),
+            },
+        )
+        result = self.executor.execute(task)
+        return self._finalize_result(result.summary, result.history_path, result.credibility)

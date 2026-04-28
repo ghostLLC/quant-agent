@@ -35,8 +35,23 @@ from .blocks import (
     Block, DataBlock, TransformBlock, CombineBlock, RelationalBlock, FilterBlock,
     BlockExecutor, OperatorRegistry, FactorHypothesis, ProgrammingPlan, CustomRequest,
     data, transform, combine, relational, filter_block,
+    factor_node_to_block, block_to_factor_node,
 )
 from .sample_split import SampleSplitter, SplitResult
+from .multi_agent import (
+    FactorMultiAgentOrchestrator,
+    MultiAgentConfig,
+    LLMClient,
+    MessageBus,
+    BaseAgent,
+    R1HypothesisGenerator,
+    R2HypothesisReviewer,
+    P1Architect,
+    P2BlockAssembler,
+    P3CustomCoder,
+    T1Backtester,
+    T2Validator,
+)
 
 __all__ = [
     "AgentRole",
@@ -108,7 +123,22 @@ __all__ = [
     "combine",
     "relational",
     "filter_block",
+    "factor_node_to_block",
+    "block_to_factor_node",
     # 样本外拆分
     "SampleSplitter",
     "SplitResult",
+    # 多 Agent 协作
+    "FactorMultiAgentOrchestrator",
+    "MultiAgentConfig",
+    "LLMClient",
+    "MessageBus",
+    "BaseAgent",
+    "R1HypothesisGenerator",
+    "R2HypothesisReviewer",
+    "P1Architect",
+    "P2BlockAssembler",
+    "P3CustomCoder",
+    "T1Backtester",
+    "T2Validator",
 ]

@@ -1,0 +1,36 @@
+[project]
+name = "quant-agent"
+version = "0.3.0"
+description = "AI-native Quant Factor Factory for A-share cross-sectional factor discovery"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+    "scipy>=1.10.0",
+    "akshare>=1.18.55",
+]
+
+[project.optional-dependencies]
+tushare = ["tushare>=1.4.0"]
+dev = ["pytest>=8.0", "ruff>=0.8", "mypy>=1.10"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 140
+exclude = ["__pycache__", ".git", ".venv", "venv", "notebooks", "backtests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501", "B008", "SIM108"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+check_untyped_defs = false
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = ["-v", "--tb=short"]

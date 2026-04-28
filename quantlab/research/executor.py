@@ -22,9 +22,12 @@ from quantlab.factor_discovery import (
     FactorDiscoveryOrchestrator,
     FactorEvolutionLoop,
     FactorHypothesisGenerator,
+    FactorMultiAgentOrchestrator,
     FactorNode,
     FactorSpec,
     HypothesisRequest,
+    LLMClient,
+    MultiAgentConfig,
 )
 
 from quantlab.pipeline import (
@@ -203,6 +206,10 @@ class ResearchTaskExecutor:
             payload, history_path = self._run_factor_evolution_task(task, active_data_path)
             return self._build_task_result(task, payload, history_path)
 
+        if task_type == "multi_agent_discovery":
+            payload, history_path = self._run_multi_agent_discovery_task(task, active_data_path)
+            return self._build_task_result(task, payload, history_path)
+
         raise ValueError(f"未知研究任务类型：{task_type}")
 
     def _run_generate_factor_hypotheses_task(self, task: ResearchTask) -> dict[str, Any]:
@@ -379,7 +386,9 @@ class ResearchTaskExecutor:
 
     def _load_factor_market_frame(self, data_path: Path, allow_proxy: bool = False) -> tuple[pd.DataFrame, dict[str, Any]]:
         raw = pd.read_csv(data_path)
-        if {"date", "asset", "close", "volume"}.issubset(raw.columns):
+        if {"date", "close", "volume"}.issubset(raw.columns) and (
+            "asset" in raw.columns or "ts_code" in raw.columns
+        ):
             market_df = load_cross_section_data(data_path)
             summary = summarize_cross_section_data(market_df)
             summary["source_mode"] = "direct_cross_section"
@@ -444,6 +453,36 @@ class ResearchTaskExecutor:
         target = self.factor_history_dir / f"evolution__{direction[:24].strip().replace(' ', '_') or 'direction'}__{uuid4().hex[:8]}.json"
         target.write_text(json.dumps(self._make_json_safe(payload), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         return str(target)
+
+    def _run_multi_agent_discovery_task(self, task: ResearchTask, data_path: Path) -> tuple[dict[str, Any], str]:
+        """运行三团队多 Agent 协作因子发掘。"""
+        metadata = task.metadata or {}
+        direction = str(metadata.get("direction") or metadata.get("factor_prompt") or "").strip()
+        if not direction:
+            raise ValueError("direction 不能为空")
+
+        market_df, market_summary = self._load_factor_market_frame(data_path, allow_proxy=False)
+
+        ma_config = MultiAgentConfig(
+            max_r1_r2_rounds=int(metadata.get("max_r1_r2_rounds", 2) or 2),
+            max_candidates_per_round=int(metadata.get("max_candidates_per_round", 3) or 3),
+        )
+
+        llm = LLMClient()
+        orchestrator = FactorMultiAgentOrchestrator(config=ma_config, llm_client=llm)
+        result = orchestrator.run(direction=direction, market_df=market_df, config=ma_config)
+
+        payload = {
+            "direction": direction,
+            "data_summary": market_summary,
+            "run_id": result["run_id"],
+            "elapsed_seconds": result["elapsed_seconds"],
+            "research": result["research"],
+            "programming": result["programming"],
+            "testing": result["testing"],
+        }
+        history_path = self._save_evolution_history(direction, payload)
+        return payload, history_path
 
     def _make_json_safe(self, payload: Any) -> Any:
         return json.loads(json.dumps(payload, ensure_ascii=False, default=str))

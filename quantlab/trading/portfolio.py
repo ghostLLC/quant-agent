@@ -111,21 +111,16 @@ class FactorPortfolioConstructor:
         side: str = "long",
         ic_series: pd.Series | None = None,
     ) -> pd.DataFrame:
-        """计算单组资产权重。"""
         n = len(assets)
         if n == 0:
             return pd.DataFrame(columns=["asset", "weight", "side"])
 
-        if self.weight_scheme == PortfolioWeightScheme.EQUAL:
-            raw_weight = 1.0 / n
-
-        elif self.weight_scheme == PortfolioWeightScheme.SCORE:
+        if self.weight_scheme == PortfolioWeightScheme.SCORE:
             scores = assets["factor_value"].abs()
             total = scores.sum()
             raw_weights = (scores / total).values if total > 0 else np.full(n, 1.0 / n)
 
         elif self.weight_scheme == PortfolioWeightScheme.IC_WEIGHT and ic_series is not None:
-            # 用最近 20 日 IC 均值作为方向确认
             recent_ic = ic_series.tail(20).mean() if len(ic_series) >= 5 else 0.0
             if recent_ic < 0:
                 scores = assets["factor_value"].rank(ascending=True)
@@ -137,27 +132,16 @@ class FactorPortfolioConstructor:
         elif self.weight_scheme == PortfolioWeightScheme.SECTOR_NEUTRAL:
             raw_weights = self._sector_neutral_weights(assets)
         else:
-            raw_weight = 1.0 / n
+            raw_weights = np.full(n, 1.0 / n)
 
-        if self.weight_scheme in (PortfolioWeightScheme.EQUAL,):
-            weights = np.full(n, raw_weight)
-        elif isinstance(raw_weights := None, np.ndarray) or True:
-            # 已经在上面赋值了
-            if self.weight_scheme == PortfolioWeightScheme.EQUAL:
-                weights = np.full(n, raw_weight)
-            else:
-                weights = raw_weights
+        weights = np.clip(raw_weights, self.min_single_weight, self.max_single_weight)
+        weights = weights / weights.sum()
 
-        # 截断
-        weights = np.clip(weights, self.min_single_weight, self.max_single_weight)
-        weights = weights / weights.sum()  # 重新归一化
-
-        result = pd.DataFrame({
+        return pd.DataFrame({
             "asset": assets["asset"].values,
             "weight": weights,
             "side": side,
         })
-        return result
 
     def _sector_neutral_weights(self, assets: pd.DataFrame) -> np.ndarray:
         """行业中性化权重。"""

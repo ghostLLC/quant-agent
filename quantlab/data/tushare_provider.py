@@ -63,12 +63,13 @@ class TushareProProvider(DataProvider):
         return self._pro is not None
 
     def load_cross_section(self, data_path: Path, **kwargs) -> pd.DataFrame:
-        """加载本地 CSV（与 LocalCSVProvider 一致）。"""
         path = Path(data_path)
         if not path.exists():
             raise FileNotFoundError(f"数据文件不存在: {path}")
         df = pd.read_csv(path)
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "asset" not in df.columns and "ts_code" in df.columns:
+            df["asset"] = df["ts_code"].astype(str).str[:6]
         if "asset" in df.columns:
             df["asset"] = df["asset"].astype(str).str.zfill(6)
         return df
@@ -345,6 +346,8 @@ class AkShareIncrementalProvider(DataProvider):
             raise FileNotFoundError(f"数据文件不存在: {path}")
         df = pd.read_csv(path)
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "asset" not in df.columns and "ts_code" in df.columns:
+            df["asset"] = df["ts_code"].astype(str).str[:6]
         if "asset" in df.columns:
             df["asset"] = df["asset"].astype(str).str.zfill(6)
         return df

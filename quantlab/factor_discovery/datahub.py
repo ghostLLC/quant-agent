@@ -87,6 +87,8 @@ class LocalCSVProvider(DataProvider):
             raise FileNotFoundError(f"数据文件不存在: {path}")
         df = pd.read_csv(path)
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "asset" not in df.columns and "ts_code" in df.columns:
+            df["asset"] = df["ts_code"].astype(str).str[:6]
         if "asset" in df.columns:
             df["asset"] = df["asset"].astype(str)
         return df
@@ -102,6 +104,8 @@ class LocalCSVProvider(DataProvider):
             return DataQualityReport(source=self.name(), notes=["文件不存在"])
 
         df = pd.read_csv(path)
+        if "asset" not in df.columns and "ts_code" in df.columns:
+            df["asset"] = df["ts_code"].astype(str).str[:6]
         date_col = "date" if "date" in df.columns else df.columns[0]
         asset_col = "asset" if "asset" in df.columns else None
 

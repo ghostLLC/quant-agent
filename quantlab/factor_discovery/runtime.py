@@ -53,7 +53,13 @@ class SafeFactorExecutor:
         if market_df.empty:
             raise ValueError("市场数据为空，无法计算因子。")
         prepared = self._prepare_market_frame(market_df)
-        values = self._evaluate_node(spec.expression_tree, prepared)
+
+        # 统一通过 BlockExecutor 执行（FactorNode → Block 转换后计算）
+        from quantlab.factor_discovery.blocks import factor_node_to_block, BlockExecutor
+        block_tree = factor_node_to_block(spec.expression_tree)
+        block_executor = BlockExecutor(date_col="date", asset_col="asset")
+        values = block_executor.execute(block_tree, prepared)
+
         base_columns = [column for column in ["date", "asset", "close", "volume", "industry", "market_cap"] if column in prepared.columns]
         panel = prepared[base_columns].copy()
         panel["factor_value"] = pd.to_numeric(values, errors="coerce")
