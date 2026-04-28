@@ -20,12 +20,8 @@ data/*.csv
 data/*.json
 
 # Agent 运行时数据
-assistant_data/memory/factor_discovery_runs/
-assistant_data/memory/factor_discovery/panels/
-assistant_data/memory/sessions/
-assistant_data/memory/summaries/
-assistant_data/multi_agent_runs/
-assistant_data/experience_loop/
+assistant_data/
+quantlab/assistant_data/
 data/scheduler/
 data/delivery_reports/
 
