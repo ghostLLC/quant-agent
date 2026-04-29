@@ -268,7 +268,7 @@ quant-agent/
 │       ├── tushare_provider.py         #   Tushare Pro
 │       ├── fetcher.py                  #   数据抓取
 │       └── loader.py                   #   数据加载
-├── tests/                              # 32 个测试
+├── tests/                              # 99 个测试（8 个模块）
 ├── data/                               # 本地数据
 ├── assistant_data/                     # 因子库 + 组合 + 告警 + 经验
 ├── reports/                            # 交付报告
@@ -410,7 +410,6 @@ result = orchestrator.run(direction="动量+反转交叉", market_df=df)
 
 ### 待做
 - [ ] Web 管理面板
-- [ ] 测试覆盖率提升（当前 32 个测试集中在 blocks/portfolio/trading）
 
 ---
 
