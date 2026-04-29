@@ -251,3 +251,58 @@ class DataHub:
             self._cache.clear()
         else:
             self._cache.pop(str(data_path), None)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Multi-Asset Context
+# ═══════════════════════════════════════════════════════════════════
+
+class MultiAssetContext:
+    """多品种上下文 —— 路由不同资产类别的数据和因子。
+
+    使用方式:
+        ctx = MultiAssetContext()
+        ctx.register("a_share_equity", data_path="data/zz800.csv", store_dir="assistant_data/equity")
+        ctx.register("index_future", data_path="data/if_daily.csv", store_dir="assistant_data/futures")
+
+        hub = ctx.get_hub("index_future")
+        store = ctx.get_store("index_future")
+
+    Agent 路由: 根据 AssetClass 自动选择正确的数据源和因子库。
+    """
+
+    def __init__(self) -> None:
+        from quantlab.factor_discovery.models import AssetClass
+        from quantlab.factor_discovery.runtime import PersistentFactorStore
+        self._configs: dict[str, dict] = {}
+        self._stores: dict[str, PersistentFactorStore] = {}
+        self._hubs: dict[str, DataHub] = {}
+
+    def register(self, asset_class: str, data_path: str | Path, store_dir: str | Path | None = None) -> None:
+        """注册一个资产类别。"""
+        from quantlab.factor_discovery.runtime import PersistentFactorStore
+        self._configs[asset_class] = {
+            "data_path": str(data_path),
+            "store_dir": str(store_dir) if store_dir else None,
+        }
+        self._hubs[asset_class] = DataHub()
+        self._stores[asset_class] = PersistentFactorStore(
+            base_dir=Path(store_dir) if store_dir else None
+        )
+
+    def get_hub(self, asset_class: str) -> DataHub:
+        if asset_class not in self._hubs:
+            raise KeyError(f"Asset class '{asset_class}' not registered. Call register() first.")
+        return self._hubs[asset_class]
+
+    def get_store(self, asset_class: str):
+        if asset_class not in self._stores:
+            raise KeyError(f"Asset class '{asset_class}' not registered. Call register() first.")
+        return self._stores[asset_class]
+
+    def get_data_path(self, asset_class: str) -> str:
+        cfg = self._configs.get(asset_class, {})
+        return cfg.get("data_path", "")
+
+    def registered_classes(self) -> list[str]:
+        return list(self._configs.keys())

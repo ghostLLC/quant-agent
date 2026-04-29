@@ -195,12 +195,16 @@ class LLMClient:
         base_url: str = "",
         api_key: str = "",
         model: str = "",
+        fallback_model: str = "",
+        reasoning_effort: str = "",
         temperature: float = 0.3,
         timeout: int = 120,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
+        self.fallback_model = fallback_model
+        self.reasoning_effort = reasoning_effort
         self.temperature = temperature
         self.timeout = timeout
 
@@ -223,6 +227,10 @@ class LLMClient:
             self.api_key = os.environ.get("ASSISTANT_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
         if not self.model:
             self.model = os.environ.get("ASSISTANT_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o"))
+        if not self.fallback_model:
+            self.fallback_model = os.environ.get("ASSISTANT_FALLBACK_MODEL", "")
+        if not self.reasoning_effort:
+            self.reasoning_effort = os.environ.get("ASSISTANT_REASONING_EFFORT", "")
 
     def chat(self, system_prompt: str, user_prompt: str, temperature: float | None = None) -> str:
         """单轮对话，返回文本。"""
@@ -241,21 +249,36 @@ class LLMClient:
             ],
             "temperature": temperature or self.temperature,
         }
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+            payload["thinking"] = {"type": "enabled"}
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
-        req = urllib_req.Request(endpoint, data=body, headers=headers, method="POST")
-        try:
-            with urllib_req.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                return data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        except error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise RuntimeError(f"LLM 调用失败 HTTP {exc.code}: {detail}") from exc
-        except Exception as exc:
-            raise RuntimeError(f"LLM 调用失败: {exc}") from exc
+        models_to_try = [self.model]
+        if self.fallback_model and self.fallback_model != self.model:
+            models_to_try.append(self.fallback_model)
+
+        last_error = None
+        for model_name in models_to_try:
+            payload["model"] = model_name
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req = urllib_req.Request(endpoint, data=body, headers=headers, method="POST")
+            try:
+                with urllib_req.urlopen(req, timeout=self.timeout) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if model_name != self.model:
+                        logger.info("LLM 降级成功: %s → %s", self.model, model_name)
+                    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            except error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                last_error = RuntimeError(f"LLM 调用失败 HTTP {exc.code}: {detail}")
+            except Exception as exc:
+                last_error = RuntimeError(f"LLM 调用失败: {exc}")
+
+        raise last_error
 
     def chat_json(self, system_prompt: str, user_prompt: str, temperature: float | None = None) -> dict[str, Any]:
         """单轮对话，期望返回 JSON。"""
@@ -1362,6 +1385,49 @@ class FactorMultiAgentOrchestrator:
 
         logger.info(f"[{run_id}] Testing: useful={useful_count}, marginal={marginal_count}, useless={useless_count}")
 
+        # ── Phase 4: Multi-Factor Combination ──
+        combination_result = None
+        if cfg.enable_factor_combination and self.factor_combiner:
+            try:
+                factor_panels = self._collect_factor_panels(t1_result, market_df, run_id)
+                if factor_panels and len(factor_panels) >= 2:
+                    combination_result = self.factor_combiner.combine(
+                        factor_panels, market_df, method="ic_weighted"
+                    )
+                    logger.info(f"[{run_id}] Combination: {len(combination_result.factor_ids)} factors, "
+                               f"IC={combination_result.combined_ic:.4f}, ICIR={combination_result.combined_icir:.4f}")
+            except Exception as exc:
+                logger.warning(f"[{run_id}] Multi-factor combination failed: {exc}")
+
+        # ── Phase 5: Experience Recording ──
+        if cfg.enable_experience_loop:
+            try:
+                outcomes = []
+                for v in verdicts:
+                    test_result = v.get("test_result", {})
+                    if test_result.get("status") != "success":
+                        continue
+                    outcomes.append(FactorOutcome(
+                        outcome_id=f"outcome_{run_id}_{v.get('hypothesis_id', uuid4().hex[:8])}",
+                        direction=direction,
+                        hypothesis_intuition="",
+                        mechanism="",
+                        pseudocode="",
+                        input_fields=[],
+                        block_tree_desc="multi_agent",
+                        verdict=v.get("verdict", "useless"),
+                        rank_ic=abs(float(test_result.get("rank_ic_mean", 0))),
+                        ic_ir=abs(float(test_result.get("ic_ir", 0))),
+                        coverage=float(test_result.get("coverage", 0)),
+                        risk_exposure=test_result.get("risk_exposure", {}),
+                        run_id=run_id,
+                    ))
+                if outcomes:
+                    self.experience_loop.record_batch(outcomes)
+                    logger.info(f"[{run_id}] Experience loop recorded {len(outcomes)} outcomes")
+            except Exception as exc:
+                logger.warning(f"[{run_id}] Experience recording failed: {exc}")
+
         elapsed = round(time.time() - start_time, 2)
 
         # 收集最终结果
@@ -1387,6 +1453,7 @@ class FactorMultiAgentOrchestrator:
                 "useless": useless_count,
                 "verdicts": verdicts,
             },
+            "combination": combination_result.to_dict() if combination_result else None,
             "message_history": self.bus.history_for("broadcast", limit=100),
             "agent_logs": {
                 "r1": self.r1._log[-10:],
@@ -1442,6 +1509,35 @@ class FactorMultiAgentOrchestrator:
             )
         except Exception as exc:
             logger.warning(f"保存运行结果失败: {exc}")
+
+
+    def _collect_factor_panels(self, t1_result: dict, market_df: "pd.DataFrame", run_id: str = "") -> dict[str, "pd.Series"]:
+        """从 T1 回测结果中提取因子面板。"""
+        from .blocks import Block, BlockExecutor
+        factor_panels = {}
+        results = t1_result.get("results", [])
+        for result in results:
+            if result.get("status") != "success":
+                continue
+            # Get block_tree from message history
+            block_tree_dict = None
+            factor_id = ""
+            for msg in self.bus._history:
+                if msg.msg_type == "assembled_factor" and (not run_id or msg.thread_id == run_id):
+                    bt = msg.payload.get("block_tree")
+                    if bt:
+                        block_tree_dict = bt
+                        factor_id = msg.payload.get("hypothesis", {}).get("hypothesis_id", "") or msg.payload.get("factor_spec", {}).get("factor_id", "")
+            if block_tree_dict:
+                try:
+                    root = Block.from_dict(block_tree_dict)
+                    executor = BlockExecutor()
+                    factor_values = executor.execute(root, market_df)
+                    if factor_values is not None and len(factor_values) > 0:
+                        factor_panels[factor_id] = factor_values
+                except Exception as exc:
+                    logger.warning(f"Re-executing block tree for {factor_id} failed: {exc}")
+        return factor_panels
 
 
 # ═══════════════════════════════════════════════════════════════════

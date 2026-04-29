@@ -86,3 +86,74 @@ class AShareCostModel(CostModel):
             "max_stocks": max_stocks,
             "avg_daily_volume": round(float(avg_volume), 0),
         }
+
+
+def compute_turnover_cost_impact(
+    factor_values: pd.Series,
+    market_df: pd.DataFrame,
+    cost_model: CostModel | None = None,
+    rebalance_days: int = 20,
+    date_col: str = "date",
+    asset_col: str = "asset",
+) -> dict[str, float]:
+    """计算因子周转率对交易成本的影响。
+
+    Args:
+        factor_values: 因子值 Series
+        market_df: 市场数据
+        cost_model: 成本模型（None 则使用 AShareCostModel 默认值）
+        rebalance_days: 调仓周期（交易日）
+        date_col: 日期列名
+        asset_col: 资产列名
+
+    Returns:
+        dict: turnover, cost_impact_bps, cost_adj_ic_penalty
+    """
+    if cost_model is None:
+        cost_model = AShareCostModel()
+
+    # Compute factor turnover between rebalance dates
+    aligned = market_df[[date_col, asset_col]].copy()
+    aligned["factor"] = factor_values
+    dates = sorted(aligned[date_col].unique())
+
+    turnovers = []
+    for i in range(rebalance_days, len(dates), rebalance_days):
+        prev_date = dates[i - rebalance_days]
+        curr_date = dates[i]
+        prev = aligned[aligned[date_col] == prev_date].set_index(asset_col)["factor"]
+        curr = aligned[aligned[date_col] == curr_date].set_index(asset_col)["factor"]
+        common = prev.index.intersection(curr.index)
+        if len(common) < 20:
+            continue
+        prev_rank = prev[common].rank(pct=True)
+        curr_rank = curr[common].rank(pct=True)
+        # Fraction of positions that change top/bottom quintile
+        prev_top = set(prev_rank.nlargest(int(len(common) * 0.2)).index)
+        curr_top = set(curr_rank.nlargest(int(len(common) * 0.2)).index)
+        overlap = len(prev_top & curr_top)
+        turnover = 1.0 - overlap / max(len(prev_top), 1)
+        turnovers.append(turnover)
+
+    if not turnovers:
+        return {"turnover": 0.0, "cost_impact_bps": 0.0, "cost_adj_ic_penalty": 0.0}
+
+    avg_turnover = float(np.mean(turnovers))
+
+    # Cost impact = turnover × round_trip_cost × annualization
+    round_trip = cost_model.round_trip_cost_rate()
+    annual_turnover_rate = avg_turnover * (252 / rebalance_days)
+    cost_impact_bps = annual_turnover_rate * round_trip * 10000  # basis points
+
+    # IC penalty: roughly cost_impact / typical return dispersion
+    # Typical cross-sectional return dispersion in A-shares ≈ 20% annual
+    typical_dispersion = 0.20
+    ic_penalty = cost_impact_bps / 10000 / typical_dispersion
+
+    return {
+        "turnover": round(float(avg_turnover), 4),
+        "annual_turnover_rate": round(float(annual_turnover_rate), 2),
+        "cost_impact_bps": round(float(cost_impact_bps), 2),
+        "cost_adj_ic_penalty": round(float(ic_penalty), 4),
+        "round_trip_cost_rate": round(float(round_trip), 6),
+    }

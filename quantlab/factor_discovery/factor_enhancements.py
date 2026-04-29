@@ -1164,3 +1164,334 @@ class OrthogonalityGuide:
 4. 如在已有方向上创新，必须提出显著不同的机制解释
 """
         return addon
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 7. 拥挤度检测 —— 因子库相关性分析与拥挤预警
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class CrowdingReport:
+    distance_matrix: dict[str, dict[str, float]]  # factor_id → {factor_id: corr}
+    clusters: list[list[str]]  # groups of crowded factors
+    crowding_scores: dict[str, float]  # factor_id → crowding score (0-1)
+    crowded_factor_ids: list[str]
+    max_observed_corr: float
+    avg_observed_corr: float
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+class CrowdingDetector:
+    """拥挤度检测器。
+
+    通过因子库内两两相关性分析，识别高度相关的因子集群（crowds）。
+    拥挤因子 alpha 衰减风险高，应标记给 delivery screener 降权或剔除。
+    """
+
+    def __init__(self, store_dir: str | Path | None = None) -> None:
+        self.store_dir = Path(store_dir) if store_dir else None
+
+    def detect(self, correlation_threshold: float = 0.6, min_factors: int = 3) -> CrowdingReport:
+        """检测因子库中的拥挤集群。
+
+        Args:
+            correlation_threshold: 相关性超过此值视为拥挤
+            min_factors: 集群至少包含的因子数才报告
+        """
+        from quantlab.factor_discovery.runtime import PersistentFactorStore
+        store = PersistentFactorStore()
+        entries = store.load_library_entries()
+        approved = [e for e in entries if str(e.factor_spec.status) in ("approved", "observe")]
+
+        if len(approved) < min_factors:
+            return CrowdingReport(
+                distance_matrix={},
+                clusters=[],
+                crowding_scores={},
+                crowded_factor_ids=[],
+                max_observed_corr=0.0,
+                avg_observed_corr=0.0,
+            )
+
+        # Compute pairwise correlations from panel snapshots
+        distance_matrix: dict[str, dict[str, float]] = {}
+        factor_corrs: list[tuple[str, str, float]] = []
+
+        for i, e1 in enumerate(approved[:-1]):
+            fid1 = e1.factor_spec.factor_id
+            distance_matrix.setdefault(fid1, {})
+            panel1 = self._load_panel(e1)
+            if panel1 is None:
+                continue
+
+            for e2 in approved[i + 1:]:
+                fid2 = e2.factor_spec.factor_id
+                distance_matrix.setdefault(fid2, {})
+                panel2 = self._load_panel(e2)
+                if panel2 is None:
+                    continue
+
+                corr = self._cross_panel_corr(panel1, panel2)
+                distance_matrix[fid1][fid2] = corr
+                distance_matrix[fid2][fid1] = corr
+                factor_corrs.append((fid1, fid2, corr))
+
+        if not factor_corrs:
+            return CrowdingReport(
+                distance_matrix=distance_matrix,
+                clusters=[], crowding_scores={}, crowded_factor_ids=[],
+                max_observed_corr=0.0, avg_observed_corr=0.0,
+            )
+
+        # Find clusters via greedy grouping of highly correlated factors
+        clusters = self._find_clusters(distance_matrix, correlation_threshold, min_factors)
+
+        # Compute crowding score per factor
+        crowding_scores: dict[str, float] = {}
+        for fid in distance_matrix:
+            corrs = [abs(v) for v in distance_matrix[fid].values() if not np.isnan(v)]
+            if corrs:
+                crowding_scores[fid] = round(float(np.mean(corrs)), 4)
+            else:
+                crowding_scores[fid] = 0.0
+
+        # Identify crowded factors (> threshold avg correlation)
+        crowded_ids = [fid for fid, score in crowding_scores.items() if score > correlation_threshold]
+        all_corrs = [abs(c) for _, _, c in factor_corrs if not np.isnan(c)]
+
+        return CrowdingReport(
+            distance_matrix=distance_matrix,
+            clusters=clusters,
+            crowding_scores=crowding_scores,
+            crowded_factor_ids=crowded_ids,
+            max_observed_corr=round(float(max(all_corrs)), 4) if all_corrs else 0.0,
+            avg_observed_corr=round(float(np.mean(all_corrs)), 4) if all_corrs else 0.0,
+        )
+
+    def _load_panel(self, entry) -> pd.DataFrame | None:
+        panel_path = getattr(entry, 'panel_snapshot_path', '')
+        if not panel_path:
+            return None
+        path = Path(panel_path)
+        if not path.exists():
+            return None
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            return None
+
+    def _cross_panel_corr(self, p1: pd.DataFrame, p2: pd.DataFrame) -> float:
+        need_cols = {"date", "asset", "factor_value"}
+        if not (need_cols.issubset(p1.columns) and need_cols.issubset(p2.columns)):
+            return 0.0
+        p1 = p1.rename(columns={"factor_value": "a"})
+        p2 = p2.rename(columns={"factor_value": "b"})
+        merged = p1[["date", "asset", "a"]].merge(p2[["date", "asset", "b"]], on=["date", "asset"])
+        if len(merged) < 20:
+            return 0.0
+        merged[["a", "b"]] = merged[["a", "b"]].apply(pd.to_numeric, errors="coerce")
+        merged = merged.dropna(subset=["a", "b"])
+        if len(merged) < 20:
+            return 0.0
+        corr = merged["a"].corr(merged["b"])
+        return round(float(corr), 4) if pd.notna(corr) else 0.0
+
+    def _find_clusters(
+        self, distance_matrix: dict[str, dict[str, float]], threshold: float, min_size: int,
+    ) -> list[list[str]]:
+        """Greedy clustering: group factors where pairwise corr > threshold."""
+        remaining = set(distance_matrix.keys())
+        clusters: list[list[str]] = []
+
+        while remaining:
+            seed = remaining.pop()
+            cluster = [seed]
+            queue = [seed]
+            while queue:
+                current = queue.pop()
+                for neighbor in list(remaining):
+                    corr = distance_matrix.get(current, {}).get(neighbor, 0.0)
+                    if abs(corr) > threshold:
+                        remaining.discard(neighbor)
+                        cluster.append(neighbor)
+                        queue.append(neighbor)
+            if len(cluster) >= min_size:
+                clusters.append(cluster)
+
+        return clusters
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 8. 市场状态检测 —— 牛熊识别与因子表现的 regime 调整
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class RegimeClassification:
+    """市场状态分类结果。"""
+    regime_per_date: dict[str, str]  # date → bull/bear/sideways
+    regime_stats: dict[str, dict[str, float]]  # bull/bear/sideways → {pct_days, avg_return, volatility}
+    transition_dates: list[str]  # regime change dates
+    current_regime: str
+
+
+class RegimeDetector:
+    """市场状态检测器。
+
+    基于等权市场组合的移动平均交叉识别牛熊。
+    将因子 IC 评估按 regime 分层，避免跨 regime 误判。
+    """
+
+    def __init__(
+        self,
+        fast_ma: int = 20,
+        slow_ma: int = 60,
+        date_col: str = "date",
+        asset_col: str = "asset",
+    ) -> None:
+        self.fast_ma = fast_ma
+        self.slow_ma = slow_ma
+        self.date_col = date_col
+        self.asset_col = asset_col
+
+    def detect(self, market_df: pd.DataFrame) -> RegimeClassification:
+        """检测市场状态。
+
+        方法：构造等权市场组合的累计收益，用快慢均线交叉判断牛熊。
+        - bull: 快线在慢线上方
+        - bear: 快线在慢线下方
+        - sideways: 两条线交叉频繁区间
+        """
+        market_returns = self._build_market_return(market_df)
+        if market_returns.empty:
+            return RegimeClassification(
+                regime_per_date={}, regime_stats={}, transition_dates=[], current_regime="sideways",
+            )
+
+        # 累计收益
+        cum_ret = (1 + market_returns["market_return"]).cumprod()
+        fast_line = cum_ret.rolling(self.fast_ma, min_periods=1).mean()
+        slow_line = cum_ret.rolling(self.slow_ma, min_periods=1).mean()
+
+        # 分类
+        date_strs = market_returns["date_str"].values
+        regime_per_date: dict[str, str] = {}
+        prev_regime = ""
+        transitions: list[str] = []
+
+        for i, d in enumerate(date_strs):
+            if i < self.slow_ma:
+                regime_per_date[d] = "sideways"
+                continue
+            spread_pct = (fast_line.iloc[i] / (slow_line.iloc[i] + 1e-10)) - 1
+            if spread_pct > 0.02:
+                regime = "bull"
+            elif spread_pct < -0.02:
+                regime = "bear"
+            else:
+                regime = "sideways"
+
+            if regime != prev_regime and prev_regime:
+                transitions.append(d)
+            prev_regime = regime
+            regime_per_date[d] = regime
+
+        # 统计
+        stats: dict[str, dict] = {"bull": {}, "bear": {}, "sideways": {}}
+        for regime in ("bull", "bear", "sideways"):
+            regime_dates = [d for d, r in regime_per_date.items() if r == regime]
+            regime_rets = market_returns[market_returns["date_str"].isin(regime_dates)]["market_return"]
+            stats[regime] = {
+                "pct_days": round(len(regime_dates) / max(len(date_strs), 1), 4),
+                "avg_return": round(float(regime_rets.mean()), 6) if len(regime_rets) > 0 else 0.0,
+                "volatility": round(float(regime_rets.std()), 6) if len(regime_rets) > 0 else 0.0,
+                "n_days": len(regime_dates),
+            }
+
+        current = date_strs[-1] if len(date_strs) > 0 else ""
+
+        return RegimeClassification(
+            regime_per_date=regime_per_date,
+            regime_stats=stats,
+            transition_dates=transitions[-10:],
+            current_regime=regime_per_date.get(current, "sideways"),
+        )
+
+    def _build_market_return(self, df: pd.DataFrame) -> pd.DataFrame:
+        """构造等权市场组合日收益。"""
+        need = {self.date_col, self.asset_col, "close"}
+        if not need.issubset(df.columns):
+            return pd.DataFrame()
+
+        df = df.copy()
+        df[self.date_col] = pd.to_datetime(df[self.date_col], errors="coerce")
+        df = df.sort_values([self.asset_col, self.date_col])
+        df["daily_ret"] = df.groupby(self.asset_col)["close"].pct_change()
+
+        market = df.groupby(self.date_col)["daily_ret"].mean().dropna().reset_index()
+        market["date_str"] = market[self.date_col].dt.strftime("%Y-%m-%d")
+        market = market.rename(columns={"daily_ret": "market_return"})
+        return market
+
+    def regime_adjusted_ic(
+        self,
+        factor_values: pd.Series,
+        market_df: pd.DataFrame,
+        classification: RegimeClassification,
+    ) -> dict[str, float]:
+        """计算 regime 调整后的 IC。
+
+        对每个 regime 分别计算 IC，再按 regime 出现频率加权平均。
+        这样牛市有效的因子不会被熊市数据拉低 IC。
+        """
+        from quantlab.factor_discovery.sample_split import SampleSplitter
+        # 复用 SampleSplitter.oos_ic_check 的日期分组逻辑
+        regime_map = classification.regime_per_date
+        if not regime_map or "close" not in market_df.columns:
+            return {"regime_adj_ic": 0.0, "regime_adj_icir": 0.0}
+
+        aligned = market_df[[self.date_col, self.asset_col, "close"]].copy()
+        aligned["factor"] = factor_values
+        aligned = aligned.dropna(subset=["factor"])
+        aligned[self.date_col] = pd.to_datetime(aligned[self.date_col], errors="coerce")
+        aligned = aligned.sort_values([self.asset_col, self.date_col])
+        aligned["fwd_ret"] = aligned.groupby(self.asset_col)["close"].shift(-5) / aligned["close"] - 1
+        aligned["date_str"] = aligned[self.date_col].dt.strftime("%Y-%m-%d")
+        aligned["regime"] = aligned["date_str"].map(regime_map).fillna("sideways")
+        aligned = aligned.dropna(subset=["fwd_ret"])
+
+        regime_ics: dict[str, list[float]] = {"bull": [], "bear": [], "sideways": []}
+        for d, group in aligned.groupby(self.date_col):
+            regime = group["regime"].iloc[0] if len(group) > 0 else "sideways"
+            valid = group[["factor", "fwd_ret"]].dropna()
+            if len(valid) < 20:
+                continue
+            ric = valid["factor"].rank().corr(valid["fwd_ret"].rank(), method="pearson")
+            if not np.isnan(ric):
+                regime_ics[regime].append(ric)
+
+        # Weighted by regime frequency
+        all_ics = []
+        weighted_ic = 0.0
+        total_weight = 0.0
+        for regime in ("bull", "bear", "sideways"):
+            ics = regime_ics[regime]
+            weight = len(ics)
+            total_weight += weight
+            if ics:
+                weighted_ic += np.mean(ics) * weight
+            all_ics.extend(ics)
+
+        if total_weight > 0:
+            weighted_ic /= total_weight
+
+        ic_ir = np.mean(all_ics) / (np.std(all_ics) + 1e-10) if all_ics else 0.0
+
+        return {
+            "regime_adj_ic": round(float(weighted_ic), 4),
+            "regime_adj_icir": round(float(ic_ir), 4),
+            "bull_ic": round(float(np.mean(regime_ics["bull"])), 4) if regime_ics["bull"] else 0.0,
+            "bear_ic": round(float(np.mean(regime_ics["bear"])), 4) if regime_ics["bear"] else 0.0,
+            "sideways_ic": round(float(np.mean(regime_ics["sideways"])), 4) if regime_ics["sideways"] else 0.0,
+        }

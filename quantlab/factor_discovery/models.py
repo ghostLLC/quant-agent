@@ -13,13 +13,27 @@ class FactorDirection(str, Enum):
     UNKNOWN = "unknown"
 
 
+class AssetClass(str, Enum):
+    """资产类别 —— 为多品种扩展提供类型锚点。"""
+    A_SHARE_EQUITY = "a_share_equity"      # A股
+    INDEX_FUTURE = "index_future"          # 股指期货
+    COMMODITY_FUTURE = "commodity_future"  # 商品期货
+    CONVERTIBLE_BOND = "convertible_bond"  # 可转债
+    ETF = "etf"                            # ETF
+    OPTION = "option"                      # 期权
+
+
 class FactorStatus(str, Enum):
     DRAFT = "draft"
     CANDIDATE = "candidate"
-    APPROVED = "approved"
-    OBSERVE = "observe"
+    OBSERVE = "observe"          # under paper-tracking observation
+    PAPER = "paper"              # paper-trading (OOS validated, no real money)
+    PILOT = "pilot"              # small-position live trading
+    LIVE = "live"                # full-position trading
+    APPROVED = "approved"        # legacy alias → maps to PAPER
     REJECTED = "rejected"
     ARCHIVED = "archived"
+    RETIRED = "retired"          # gracefully decommissioned prior live factor
 
 
 class ResearchStage(str, Enum):
@@ -246,12 +260,14 @@ class FactorSpec:
     source: str = "factor_discovery_mode"
     created_from: str = "template"
     status: FactorStatus = FactorStatus.DRAFT
+    asset_class: AssetClass = AssetClass.A_SHARE_EQUITY
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["direction"] = self.direction.value
         payload["status"] = self.status.value
+        payload["asset_class"] = self.asset_class.value
         if self.expression_tree:
             payload["expression_tree"] = self.expression_tree.to_dict()
         return payload
@@ -280,6 +296,7 @@ class FactorSpec:
             source=str(payload.get("source", "factor_discovery_mode") or "factor_discovery_mode"),
             created_from=str(payload.get("created_from", "template") or "template"),
             status=FactorStatus(str(payload.get("status", FactorStatus.DRAFT.value) or FactorStatus.DRAFT.value)),
+            asset_class=AssetClass(str(payload.get("asset_class", AssetClass.A_SHARE_EQUITY.value) or AssetClass.A_SHARE_EQUITY.value)),
             notes=list(payload.get("notes", []) or []),
         )
 
@@ -512,3 +529,103 @@ class FactorLibraryEntry:
             experience_refs=list(payload.get("experience_refs", []) or []),
             panel_snapshot_path=payload.get("panel_snapshot_path"),
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Factor Lifecycle Manager
+# ═══════════════════════════════════════════════════════════════════
+
+class FactorLifecycleManager:
+    """因子生命周期管理器。
+
+    状态流转（基于 Agent 决策而非硬规则）：
+    DRAFT → CANDIDATE → OBSERVE → PAPER → PILOT → LIVE → RETIRED
+                              ↓         ↓
+                          REJECTED  ARCHIVED (from any state)
+
+    升级条件（每个状态停留期收集证据）：
+    - CANDIDATE → OBSERVE: 初始 IC > 0.015
+    - OBSERVE → PAPER:    OOS IC 稳定 30+ 天
+    - PAPER → PILOT:      纸交易 60 天 IC 稳定 + 无风控告警
+    - PILOT → LIVE:       小仓位 90 天实盘验证 + 成本调整后 IC 仍 > 0
+    - any → RETIRED:      衰减不可恢复 或 拥挤度过高
+    """
+
+    VALID_TRANSITIONS = {
+        FactorStatus.DRAFT:     [FactorStatus.CANDIDATE, FactorStatus.REJECTED],
+        FactorStatus.CANDIDATE: [FactorStatus.OBSERVE, FactorStatus.REJECTED],
+        FactorStatus.OBSERVE:   [FactorStatus.PAPER, FactorStatus.REJECTED, FactorStatus.ARCHIVED],
+        FactorStatus.PAPER:     [FactorStatus.PILOT, FactorStatus.OBSERVE, FactorStatus.ARCHIVED],
+        FactorStatus.PILOT:     [FactorStatus.LIVE, FactorStatus.PAPER, FactorStatus.RETIRED],
+        FactorStatus.LIVE:      [FactorStatus.RETIRED],
+        FactorStatus.APPROVED:  [FactorStatus.PAPER, FactorStatus.OBSERVE, FactorStatus.ARCHIVED, FactorStatus.RETIRED],
+        FactorStatus.REJECTED:  [FactorStatus.ARCHIVED],
+        FactorStatus.ARCHIVED:  [],
+        FactorStatus.RETIRED:   [FactorStatus.ARCHIVED],
+    }
+
+    def transition(
+        self,
+        current: FactorStatus,
+        target: FactorStatus,
+        evidence: dict | None = None,
+    ) -> tuple[bool, str]:
+        """尝试状态迁移。
+
+        Args:
+            current: 当前状态
+            target: 目标状态
+            evidence: 迁移证据 (e.g. {oob_ic: 0.03, days_stable: 45})
+
+        Returns:
+            (success, reason)
+        """
+        allowed = self.VALID_TRANSITIONS.get(current, [])
+        if target not in allowed:
+            return False, f"不允许从 {current.value} → {target.value}，允许: {[t.value for t in allowed]}"
+
+        return True, f"状态迁移 {current.value} → {target.value} 已许可"
+
+    def recommend(self, entry: "FactorLibraryEntry", days_since_eval: int = 0, oos_ic: float = 0.0,
+                  cost_adj_ic: float = 0.0, crowding_score: float = 0.0,
+                  regime_adj_ic: float = 0.0) -> tuple[FactorStatus, str]:
+        """基于证据推荐下一步状态（Agent 决策辅助）。"""
+        current = FactorStatus(str(entry.factor_spec.status))
+        report = entry.latest_report
+
+        ic = oos_ic or abs(getattr(getattr(report, 'scorecard', None), 'rank_ic_mean', 0) or 0)
+
+        if current == FactorStatus.CANDIDATE:
+            if ic > 0.015:
+                return FactorStatus.OBSERVE, f"IC={ic:.4f} > 0.015，进入观察期"
+            return current, f"IC={ic:.4f} 不足，保持候选"
+
+        if current == FactorStatus.OBSERVE:
+            if days_since_eval >= 30 and oos_ic > 0.01 and cost_adj_ic > 0.0:
+                return FactorStatus.PAPER, f"OOS IC={oos_ic:.4f}, cost_adj_IC={cost_adj_ic:.4f}, 进入纸交易"
+            if ic < 0.005 and days_since_eval > 60:
+                return FactorStatus.REJECTED, f"长期低 IC={ic:.4f}，拒绝"
+            return current, "观察中"
+
+        if current == FactorStatus.PAPER:
+            if days_since_eval >= 60 and oos_ic > 0.015 and crowding_score < 0.5:
+                return FactorStatus.PILOT, f"纸交易稳定 (IC={oos_ic:.4f}, crowding={crowding_score:.2f})"
+            if oos_ic < 0.0 and days_since_eval > 90:
+                return FactorStatus.OBSERVE, "纸交易 IC 转负，回退观察"
+            return current, "纸交易中"
+
+        if current == FactorStatus.PILOT:
+            if days_since_eval >= 90 and cost_adj_ic > 0.01 and regime_adj_ic > 0.0:
+                return FactorStatus.LIVE, f"实盘验证通过 (cost_adj_IC={cost_adj_ic:.4f})"
+            if cost_adj_ic < 0.0 and days_since_eval > 120:
+                return FactorStatus.RETIRED, "成本调整后 IC 为负，建议退役"
+            return current, "小仓验证中"
+
+        if current == FactorStatus.LIVE:
+            if ic < 0.005 and days_since_eval > 60:
+                return FactorStatus.RETIRED, f"IC 衰减至 {ic:.4f}，建议退役"
+            if crowding_score > 0.7:
+                return FactorStatus.RETIRED, f"拥挤度过高 ({crowding_score:.2f})，建议退役"
+            return current, "正常运行中"
+
+        return current, "无推荐变更"

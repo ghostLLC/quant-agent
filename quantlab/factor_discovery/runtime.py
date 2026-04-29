@@ -353,3 +353,65 @@ class PersistentFactorStore:
         max_corr = max(corr_map.values()) if corr_map else 0.0
         return corr_map, float(max_corr)
 
+    def get_library_stats(self) -> dict[str, int]:
+        entries = self.load_library_entries()
+        stats: dict[str, int] = {}
+        for e in entries:
+            s = str(e.factor_spec.status)
+            stats[s] = stats.get(s, 0) + 1
+        stats["total"] = len(entries)
+        return stats
+
+    def archive_underperforming(self, min_observe_days: int = 30, min_ic_threshold: float = 0.015) -> dict[str, Any]:
+        """Archive OBSERVE factors older than min_observe_days and REJECTED factors.
+
+        Returns summary of archived count and freed panel files.
+        """
+        from datetime import datetime, timezone
+        entries = self.load_library_entries()
+        now = datetime.now(timezone.utc)
+        archived: list[str] = []
+        cleaned_panels = 0
+
+        for entry in entries:
+            status = str(entry.factor_spec.status)
+            should_archive = False
+
+            if status == "rejected":
+                should_archive = True
+            elif status == "observe":
+                report = entry.latest_report
+                if report and hasattr(report, 'evaluated_at') and report.evaluated_at:
+                    try:
+                        eval_dt = datetime.fromisoformat(str(report.evaluated_at))
+                        days_since = (now - eval_dt).days
+                        if days_since > min_observe_days:
+                            should_archive = True
+                    except (ValueError, TypeError):
+                        pass
+                elif report and hasattr(report, 'scorecard'):
+                    ic = abs(getattr(report.scorecard, 'rank_ic_mean', 0) or 0)
+                    if ic < min_ic_threshold:
+                        should_archive = True
+
+            if should_archive:
+                entry.factor_spec.status = FactorStatus.ARCHIVED
+                archived.append(entry.factor_spec.factor_id)
+                if entry.panel_snapshot_path:
+                    panel_file = Path(entry.panel_snapshot_path)
+                    if panel_file.exists():
+                        try:
+                            panel_file.unlink()
+                            cleaned_panels += 1
+                        except OSError:
+                            pass
+
+        if archived:
+            entries_to_keep = [e for e in entries if str(e.factor_spec.status) != "archived"]
+            self.library_path.write_text(
+                json.dumps({"entries": [e.to_dict() for e in entries]}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        return {"archived_count": len(archived), "archived_ids": archived, "panels_cleaned": cleaned_panels}
+
