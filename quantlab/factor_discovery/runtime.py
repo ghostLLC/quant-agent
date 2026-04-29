@@ -353,6 +353,52 @@ class PersistentFactorStore:
         max_corr = max(corr_map.values()) if corr_map else 0.0
         return corr_map, float(max_corr)
 
+    def get_evolution_tree(self, factor_id: str) -> list[dict[str, Any]]:
+        """追溯因子进化链（从当前因子沿 parent_factor_id 回溯至根）。
+
+        返回按时间顺序排列的因子列表（根 → 当前因子）。
+        """
+        entries = self.load_library_entries()
+        entry_map = {e.factor_spec.factor_id: e for e in entries}
+
+        chain: list[dict[str, Any]] = []
+        current_id = factor_id
+        while current_id:
+            entry = entry_map.get(current_id)
+            if entry is None:
+                break
+            chain.append({
+                "factor_id": entry.factor_spec.factor_id,
+                "name": entry.factor_spec.name,
+                "version": entry.factor_spec.version,
+                "parent_factor_id": entry.factor_spec.parent_factor_id,
+                "family": entry.factor_spec.family,
+                "status": str(entry.factor_spec.status),
+            })
+            next_id = entry.factor_spec.parent_factor_id
+            if not next_id or next_id == current_id:
+                break
+            current_id = next_id
+
+        chain.reverse()
+        return chain
+
+    def get_all_roots(self) -> list[dict[str, Any]]:
+        """返回所有根因子（无父因子的原始发现）。"""
+        entries = self.load_library_entries()
+        roots = [
+            {
+                "factor_id": e.factor_spec.factor_id,
+                "name": e.factor_spec.name,
+                "version": e.factor_spec.version,
+                "family": e.factor_spec.family,
+                "status": str(e.factor_spec.status),
+            }
+            for e in entries
+            if not e.factor_spec.parent_factor_id
+        ]
+        return roots
+
     def get_library_stats(self) -> dict[str, int]:
         entries = self.load_library_entries()
         stats: dict[str, int] = {}

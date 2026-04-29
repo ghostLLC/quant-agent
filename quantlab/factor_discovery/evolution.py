@@ -530,6 +530,7 @@ class FactorEvolutionLoop:
             tags=base.tags + ["evolved"],
             source="evolution_loop",
             created_from="evolution",
+            parent_factor_id=base.factor_id,
         )
 
     @staticmethod

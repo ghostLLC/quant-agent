@@ -210,6 +210,7 @@ class FactorDeliveryReportGenerator:
         market_df: pd.DataFrame,
         evaluation_report: Any | None = None,
         output_dir: str | Path | None = None,
+        formats: list[str] | None = None,
     ) -> FactorDeliveryReport:
         """生成因子交付报告。
 
@@ -289,7 +290,7 @@ class FactorDeliveryReportGenerator:
 
         # 保存
         if output_dir:
-            self._save_report(report, output_dir)
+            self._save_report(report, output_dir, formats=formats, factor_panel=factor_panel)
 
         return report
 
@@ -455,18 +456,312 @@ class FactorDeliveryReportGenerator:
             "walk_forward_sharpe": 0.0,
         }
 
-    def _save_report(self, report: FactorDeliveryReport, output_dir: str | Path) -> None:
+    def _save_report(
+        self,
+        report: FactorDeliveryReport,
+        output_dir: str | Path,
+        formats: list[str] | None = None,
+        factor_panel: pd.DataFrame | None = None,
+    ) -> None:
         """保存报告。"""
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
+        report_dict = report.to_dict()
 
-        # JSON
-        json_path = out / f"factor_delivery_{report.factor_id}.json"
-        json_path.write_text(
-            json.dumps(report.to_dict(), ensure_ascii=False, indent=2, default=str),
-            encoding="utf-8",
-        )
+        if formats is None:
+            formats = ["json", "md"]
 
-        # Markdown
-        md_path = out / f"factor_delivery_{report.factor_id}.md"
-        md_path.write_text(report.to_markdown(), encoding="utf-8")
+        for fmt in formats:
+            if fmt == "json":
+                json_path = out / f"factor_delivery_{report.factor_id}.json"
+                json_path.write_text(
+                    json.dumps(report_dict, ensure_ascii=False, indent=2, default=str),
+                    encoding="utf-8",
+                )
+            elif fmt == "md":
+                md_path = out / f"factor_delivery_{report.factor_id}.md"
+                md_path.write_text(report.to_markdown(), encoding="utf-8")
+            elif fmt == "html":
+                html_path = out / f"factor_delivery_{report.factor_id}.html"
+                self.generate_html(report_dict, str(html_path))
+            elif fmt in ("csv", "parquet"):
+                if factor_panel is not None:
+                    ext = fmt
+                    panel_path = out / f"factor_panel_{report.factor_id}.{ext}"
+                    self.export_factor_panel(factor_panel, str(panel_path), format=fmt)
+
+    @staticmethod
+    def generate_html(report_dict: dict[str, Any], output_path: str) -> None:
+        """Generate a self-contained HTML factor delivery report.
+
+        Parameters
+        ----------
+        report_dict : dict
+            FactorDeliveryReport as a dict (from to_dict()).
+        output_path : str
+            File path for the output HTML.
+        """
+        name = report_dict.get("factor_name", "Unknown")
+        fid = report_dict.get("factor_id", "unknown")
+        family = report_dict.get("factor_family", "")
+        direction = report_dict.get("direction", "")
+        expression = report_dict.get("expression", "")
+        hypothesis = report_dict.get("hypothesis", "")
+        report_date = report_dict.get("report_date", "")
+        universe = report_dict.get("universe", "")
+        data_period = report_dict.get("data_period", "")
+
+        rank_ic = report_dict.get("rank_ic_mean", 0)
+        ic_std = report_dict.get("rank_ic_std", 0)
+        icir = report_dict.get("icir", 0)
+        ic_pos = report_dict.get("ic_positive_ratio", 0)
+        decay = report_dict.get("decay_profile", {})
+
+        sim = report_dict.get("simulation", {})
+        cap = report_dict.get("capacity", {})
+        corr = report_dict.get("correlation_to_known_factors", {})
+        ind_exp = report_dict.get("industry_exposure", {})
+        mc_exp = report_dict.get("market_cap_exposure", 0)
+        stability = report_dict.get("stability_score", 0)
+        so_perf = report_dict.get("sample_out_performance", 0)
+        wf_sharpe = report_dict.get("walk_forward_sharpe", 0)
+        turnover = report_dict.get("avg_daily_turnover", 0)
+        holding = report_dict.get("holding_period_days", 0)
+        rt_cost = report_dict.get("round_trip_cost", 0)
+        risk_flags = report_dict.get("risk_flags", [])
+
+        def esc(v: Any) -> str:
+            return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        def fmt_pct(v: float) -> str:
+            return f"{v * 100:.2f}%"
+
+        def fmt_float(v: float, d: int = 4) -> str:
+            return f"{v:.{d}f}"
+
+        # Build decay bars
+        decay_rows = ""
+        if decay:
+            max_ic = max(abs(v) for v in decay.values()) or 0.01
+            for horizon, ic_val in decay.items():
+                bar_pct = min(abs(ic_val) / max_ic * 100, 100) if max_ic else 0
+                color = "#2e7d32" if ic_val >= 0 else "#c62828"
+                decay_rows += f"""
+                <tr>
+                    <td class="decay-label">{esc(horizon)}</td>
+                    <td class="decay-value">{fmt_float(ic_val)}</td>
+                    <td class="decay-bar-cell">
+                        <div class="decay-bar" style="width:{bar_pct:.0f}%;background:{color};"></div>
+                    </td>
+                </tr>"""
+
+        # Risk flags
+        risk_html = ""
+        if risk_flags:
+            risk_items = "".join(f"<li>{esc(f)}</li>" for f in risk_flags)
+            risk_html = f"""
+            <h2>Risk Flags</h2>
+            <ul class="risk-list">{risk_items}</ul>"""
+
+        # Correlation table
+        corr_rows = ""
+        if corr:
+            for fname, cval in corr.items():
+                corr_rows += f"<tr><td>{esc(fname)}</td><td>{fmt_float(cval)}</td></tr>"
+
+        # Industry exposure
+        ind_rows = ""
+        if ind_exp:
+            for iname, ival in ind_exp.items():
+                ind_rows += f"<tr><td>{esc(iname)}</td><td>{fmt_float(ival)}</td></tr>"
+
+        html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Factor Delivery Report: {esc(name)}</title>
+<style>
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 20px;
+        color: #212121;
+        background: #fff;
+        line-height: 1.5;
+    }}
+    h1 {{ font-size: 1.5rem; border-bottom: 2px solid #1565c0; padding-bottom: 8px; color: #1565c0; }}
+    h2 {{ font-size: 1.15rem; margin-top: 28px; border-bottom: 1px solid #e0e0e0; padding-bottom: 4px; color: #333; }}
+    .meta {{ color: #666; font-size: 0.9rem; margin-bottom: 16px; }}
+    .meta span {{ margin-right: 24px; }}
+    .section {{ margin: 12px 0 24px; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 8px 0 16px; }}
+    th, td {{ padding: 6px 10px; text-align: left; border-bottom: 1px solid #eee; font-size: 0.9rem; }}
+    th {{ background: #f5f5f5; font-weight: 600; }}
+    .decay-chart {{ margin: 12px 0; }}
+    .decay-label {{ width: 60px; }}
+    .decay-value {{ width: 80px; font-family: monospace; }}
+    .decay-bar-cell {{ width: auto; }}
+    .decay-bar {{ height: 16px; border-radius: 2px; min-width: 4px; }}
+    .risk-list {{ color: #c62828; font-size: 0.9rem; }}
+    .risk-list li {{ margin: 4px 0; }}
+    .expression {{ font-family: monospace; background: #f5f5f5; padding: 8px 12px; border-radius: 4px; font-size: 0.9rem; }}
+    .footer {{ margin-top: 32px; padding-top: 12px; border-top: 1px solid #e0e0e0; color: #999; font-size: 0.8rem; }}
+    @media print {{
+        body {{ padding: 0; max-width: none; }}
+        h1 {{ page-break-before: avoid; }}
+        table {{ page-break-inside: avoid; }}
+    }}
+</style>
+</head>
+<body>
+
+<h1>Factor Delivery Report: {esc(name)}</h1>
+<div class="meta">
+    <span><strong>Factor ID:</strong> {esc(fid)}</span>
+    <span><strong>Family:</strong> {esc(family)}</span>
+    <span><strong>Direction:</strong> {esc(direction)}</span>
+</div>
+<div class="meta">
+    <span><strong>Report Date:</strong> {esc(report_date)}</span>
+    <span><strong>Universe:</strong> {esc(universe)}</span>
+    <span><strong>Data Period:</strong> {esc(data_period)}</span>
+</div>
+
+<div class="section">
+    <h2>Factor Definition</h2>
+    <p><strong>Expression:</strong></p>
+    <div class="expression">{esc(expression)}</div>
+    <p><strong>Hypothesis:</strong> {esc(hypothesis)}</p>
+</div>
+
+<div class="section">
+    <h2>IC Statistics</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Rank IC Mean</td><td>{fmt_float(rank_ic)}</td></tr>
+        <tr><td>Rank IC Std</td><td>{fmt_float(ic_std)}</td></tr>
+        <tr><td>ICIR</td><td>{fmt_float(icir, 3)}</td></tr>
+        <tr><td>IC Positive Ratio</td><td>{fmt_pct(ic_pos)}</td></tr>
+    </table>
+</div>"""
+
+        if decay:
+            html += f"""
+<div class="section">
+    <h2>IC Decay Profile</h2>
+    <div class="decay-chart">
+        <table>
+            <tr><th>Horizon</th><th>IC</th><th>Strength</th></tr>
+            {decay_rows}
+        </table>
+    </div>
+</div>"""
+
+        if sim:
+            html += f"""
+<div class="section">
+    <h2>Post-Cost Portfolio Performance</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Gross Return (ann.)</td><td>{fmt_pct(sim.get('gross_return', 0))}</td></tr>
+        <tr><td>Net Return (ann.)</td><td>{fmt_pct(sim.get('net_return', 0))}</td></tr>
+        <tr><td>Sharpe Ratio</td><td>{fmt_float(sim.get('sharpe_ratio', 0), 3)}</td></tr>
+        <tr><td>Max Drawdown</td><td>{fmt_pct(sim.get('max_drawdown', 0))}</td></tr>
+        <tr><td>Avg Daily Turnover</td><td>{fmt_pct(sim.get('avg_daily_turnover', 0))}</td></tr>
+        <tr><td>Cost Ratio</td><td>{fmt_pct(sim.get('cost_ratio', 0))}</td></tr>
+        <tr><td>Information Ratio</td><td>{fmt_float(sim.get('information_ratio', 0), 3)}</td></tr>
+        <tr><td>Batting Average</td><td>{fmt_pct(sim.get('batting_average', 0))}</td></tr>
+    </table>
+</div>"""
+
+        if cap:
+            html += f"""
+<div class="section">
+    <h2>Capacity Estimate</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Per-Stock Daily Capacity</td><td>&yen;{cap.get('per_stock_daily_capacity_yuan', 0):,.0f}</td></tr>
+        <tr><td>Total Daily Capacity</td><td>&yen;{cap.get('total_daily_capacity_yuan', 0):,.0f}</td></tr>
+        <tr><td>Total Monthly Capacity</td><td>&yen;{cap.get('total_monthly_capacity_yuan', 0):,.0f}</td></tr>
+    </table>
+</div>"""
+
+        if corr_rows:
+            html += f"""
+<div class="section">
+    <h2>Orthogonality</h2>
+    <table>
+        <tr><th>Known Factor</th><th>Correlation</th></tr>
+        {corr_rows}
+    </table>
+</div>"""
+
+        if ind_rows:
+            html += f"""
+<div class="section">
+    <h2>Exposures</h2>
+    <p><strong>Industry Exposure:</strong></p>
+    <table>
+        <tr><th>Industry</th><th>Exposure</th></tr>
+        {ind_rows}
+    </table>
+    <p><strong>Market Cap Exposure:</strong> {fmt_float(mc_exp)}</p>
+</div>"""
+
+        html += f"""
+<div class="section">
+    <h2>Robustness</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Stability Score</td><td>{fmt_float(stability, 3)}</td></tr>
+        <tr><td>Sample-Out Performance</td><td>{fmt_pct(so_perf)}</td></tr>
+        <tr><td>Walk-Forward Sharpe</td><td>{fmt_float(wf_sharpe, 3)}</td></tr>
+    </table>
+</div>
+
+<div class="section">
+    <h2>Trading Characteristics</h2>
+    <table>
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Avg Daily Turnover</td><td>{fmt_pct(turnover)}</td></tr>
+        <tr><td>Avg Holding Period (days)</td><td>{fmt_float(holding, 1)}</td></tr>
+        <tr><td>Round-Trip Cost</td><td>{fmt_pct(rt_cost)}</td></tr>
+    </table>
+</div>
+{risk_html}
+
+<div class="footer">
+    Generated by QuantLab Factor Factory on {esc(report_date)}.
+</div>
+
+</body>
+</html>"""
+
+        Path(output_path).write_text(html, encoding="utf-8")
+
+    @staticmethod
+    def export_factor_panel(
+        factor_panel: pd.DataFrame,
+        output_path: str,
+        format: str = "csv",
+    ) -> None:
+        """Export factor panel DataFrame to CSV or Parquet.
+
+        Parameters
+        ----------
+        factor_panel : DataFrame
+            Factor panel with date, asset, factor_value columns.
+        output_path : str
+            File path for the output file.
+        format : str
+            Export format: 'csv' or 'parquet'.
+        """
+        if format == "csv":
+            factor_panel.to_csv(output_path, index=False)
+        elif format == "parquet":
+            factor_panel.to_parquet(output_path, index=False)
+        else:
+            raise ValueError(f"Unsupported export format: {format}. Use 'csv' or 'parquet'.")

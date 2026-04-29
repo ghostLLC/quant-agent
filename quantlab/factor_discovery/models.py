@@ -261,6 +261,7 @@ class FactorSpec:
     created_from: str = "template"
     status: FactorStatus = FactorStatus.DRAFT
     asset_class: AssetClass = AssetClass.A_SHARE_EQUITY
+    parent_factor_id: str = ""
     notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -268,6 +269,7 @@ class FactorSpec:
         payload["direction"] = self.direction.value
         payload["status"] = self.status.value
         payload["asset_class"] = self.asset_class.value
+        payload["parent_factor_id"] = self.parent_factor_id
         if self.expression_tree:
             payload["expression_tree"] = self.expression_tree.to_dict()
         return payload
@@ -297,6 +299,7 @@ class FactorSpec:
             created_from=str(payload.get("created_from", "template") or "template"),
             status=FactorStatus(str(payload.get("status", FactorStatus.DRAFT.value) or FactorStatus.DRAFT.value)),
             asset_class=AssetClass(str(payload.get("asset_class", AssetClass.A_SHARE_EQUITY.value) or AssetClass.A_SHARE_EQUITY.value)),
+            parent_factor_id=str(payload.get("parent_factor_id", "") or ""),
             notes=list(payload.get("notes", []) or []),
         )
 

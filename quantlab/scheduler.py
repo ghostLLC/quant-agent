@@ -35,6 +35,7 @@ from quantlab.config import DEFAULT_CROSS_SECTION_DATA_PATH, DATA_DIR
 from quantlab.factor_discovery.factor_enhancements import (
     ExperienceLoop,
     FactorCombiner,
+    FactorCurveAnalyzer,
     OrthogonalityGuide,
 )
 
@@ -66,6 +67,7 @@ class DailyRunRecord:
     oos_validation: dict[str, Any] = field(default_factory=dict)
     combination: dict[str, Any] = field(default_factory=dict)
     governance: dict[str, Any] = field(default_factory=dict)
+    paper_trading: dict[str, Any] = field(default_factory=dict)
     delivery_reports: list[str] = field(default_factory=list)
 
     error_message: str = ""
@@ -92,6 +94,91 @@ def _save_run_log(records: list[dict[str, Any]]) -> None:
     )
 
 
+def _record_evolution_experience(
+    store: Any,
+    experience_loop: Any,
+    direction: str,
+    evolution_result: dict[str, Any],
+) -> None:
+    """从模板进化结果中提取真实值记录经验。"""
+    try:
+        from quantlab.factor_discovery.factor_enhancements import FactorOutcome
+        from quantlab.factor_discovery.runtime import SafeFactorExecutor
+
+        # Load entries to find newly approved ones from this evolution
+        entries = store.load_library_entries()
+        approved_ids = set(evolution_result.get("approved_factor_ids", []))
+
+        if not approved_ids:
+            return
+
+        for entry in entries:
+            fid = entry.factor_spec.factor_id
+            if fid not in approved_ids:
+                continue
+
+            # Extract block_tree_desc from expression_tree
+            block_tree_desc = _extract_tree_desc(entry.factor_spec)
+
+            # Extract input_fields from dependencies
+            input_fields = [d.field_name for d in (entry.factor_spec.dependencies or [])]
+
+            # Get IC from evaluation report
+            rank_ic = abs(entry.latest_report.scorecard.rank_ic_mean) if entry.latest_report else 0.0
+            ic_ir = abs(entry.latest_report.scorecard.ic_ir) if entry.latest_report else 0.0
+
+            outcome = FactorOutcome(
+                outcome_id=f"evo_{fid}",
+                direction=direction,
+                hypothesis_intuition=entry.factor_spec.description or "",
+                mechanism=entry.factor_spec.hypothesis or "",
+                pseudocode=str(entry.factor_spec.expression_tree) if entry.factor_spec.expression_tree else "",
+                input_fields=input_fields,
+                block_tree_desc=block_tree_desc,
+                verdict="useful" if rank_ic >= 0.03 else ("marginal" if rank_ic >= 0.015 else "useless"),
+                rank_ic=round(rank_ic, 4),
+                ic_ir=round(ic_ir, 4),
+                coverage=round(float(entry.latest_report.scorecard.coverage) if entry.latest_report else 0.0, 4),
+                risk_exposure=getattr(entry.latest_report.scorecard, 'risk_exposure', {}) if entry.latest_report else {},
+                run_id=evolution_result.get("run_id", ""),
+            )
+            experience_loop.record(outcome)
+            logger.info("经验记录: %s direction=%s ic=%.4f", fid, direction, rank_ic)
+    except Exception as exc:
+        logger.warning("经验提取失败: %s", exc)
+
+
+def _extract_tree_desc(spec: Any) -> str:
+    """从 FactorSpec 提取积木树描述文本。"""
+    try:
+        tree = spec.expression_tree
+        if tree is None:
+            return "template_unknown"
+        # Try FactorNode conversion
+        if hasattr(tree, 'node_type'):
+            parts = []
+            q = [tree]
+            while q:
+                node = q.pop(0)
+                if hasattr(node, 'node_type'):
+                    parts.append(str(node.node_type) if node.node_type else "?")
+                q.extend(getattr(node, 'children', []))
+            return "→".join(parts[:8])[:60]
+        # Try dict block_tree
+        if isinstance(tree, dict):
+            bt = tree.get("block_type", tree.get("type", ""))
+            op = tree.get("op", "")
+            children = tree.get("children", tree.get("input_blocks", []))
+            parts = [bt, op] if bt or op else ["dict"]
+            for child in (children if isinstance(children, list) else [children]):
+                if isinstance(child, dict):
+                    parts.append(child.get("op", child.get("type", "")))
+            return "→".join(p for p in parts if p)[:60]
+        return str(tree)[:60]
+    except Exception:
+        return "template_unknown"
+
+
 # ---------------------------------------------------------------------------
 # 2. 每日执行引擎
 # ---------------------------------------------------------------------------
@@ -106,6 +193,7 @@ class DailyScheduler:
         evolution_rounds: int = 3,
         max_candidates_per_round: int = 5,
         use_adaptive_directions: bool = True,
+        use_multi_agent: bool = True,
     ) -> None:
         self.data_path = Path(data_path or DEFAULT_CROSS_SECTION_DATA_PATH)
         self.directions = directions or [
@@ -119,6 +207,7 @@ class DailyScheduler:
         self.evolution_rounds = evolution_rounds
         self.max_candidates_per_round = max_candidates_per_round
         self.use_adaptive_directions = use_adaptive_directions
+        self.use_multi_agent = use_multi_agent
         self.experience_loop = ExperienceLoop()
         self.orth_guide = OrthogonalityGuide()
         self.combiner = FactorCombiner()
@@ -162,6 +251,9 @@ class DailyScheduler:
             try:
                 record.combination = self._combine_factors()
                 logger.info("多因子组合完成: 组合IC=%.4f", record.combination.get("combined_ic", 0))
+                # Benchmark vs equal-weight and market-cap weighted
+                if record.combination.get("status") == "success":
+                    record.combination["benchmark"] = self._benchmark_compare(record.combination)
             except Exception as exc:
                 logger.warning("多因子组合失败: %s", exc)
                 record.combination = {"status": "failed", "error": str(exc)[:200]}
@@ -169,6 +261,15 @@ class DailyScheduler:
             # ---- 阶段 6: 交付标准筛选 ----
             record.screening = self._screen_deliverable()
             logger.info("筛选完成: %d 可交付因子", record.screening.get("deliverable_count", 0))
+
+            # ---- 阶段 6.5: 启动纸交易 ----
+            try:
+                record.paper_trading = self._start_paper_trading(
+                    record.screening.get("deliverable_factor_ids", [])
+                )
+            except Exception as exc:
+                logger.warning("纸交易启动失败: %s", exc)
+                record.paper_trading = {"status": "failed", "error": str(exc)[:200]}
 
             # ---- 阶段 7: 因子库治理 ----
             try:
@@ -302,6 +403,68 @@ class DailyScheduler:
             "method": result.method,
         }
 
+    def _benchmark_compare(self, combination: dict[str, Any]) -> dict[str, float]:
+        """对组合因子进行等权和市值加权基准比较。"""
+        market_df = self._load_data()
+        if market_df.empty:
+            return {"status": "skipped", "reason": "数据为空"}
+
+        comb_ic = combination.get("combined_ic", 0.0)
+
+        try:
+            # Equal-weighted benchmark: rank(1) for all assets (all equal)
+            if "date" in market_df.columns and "asset" in market_df.columns:
+                df = market_df.copy()
+                df["ew_factor"] = 1.0
+                ew_ic = self._compute_factor_ic(df, "ew_factor")
+            else:
+                ew_ic = 0.0
+
+            # Market-cap weighted: rank(market_cap)
+            mc_col = None
+            for col in ["total_mv", "circ_mv", "market_cap"]:
+                if col in market_df.columns:
+                    mc_col = col
+                    break
+            if mc_col and "date" in market_df.columns and "asset" in market_df.columns:
+                df = market_df.copy()
+                df["mcw_factor"] = df[mc_col].fillna(df[mc_col].median())
+                mcw_ic = self._compute_factor_ic(df, "mcw_factor")
+            else:
+                mcw_ic = 0.0
+
+            excess_ew = round(comb_ic - ew_ic, 4)
+            excess_mcw = round(comb_ic - mcw_ic, 4)
+
+            return {
+                "ew_ic": round(ew_ic, 4),
+                "mcw_ic": round(mcw_ic, 4),
+                "factor_ic": round(comb_ic, 4),
+                "excess_vs_ew": excess_ew,
+                "excess_vs_mcw": excess_mcw,
+            }
+        except Exception as exc:
+            return {"status": "failed", "error": str(exc)[:200]}
+
+    def _compute_factor_ic(self, df: "pd.DataFrame", factor_col: str) -> float:
+        """Compute rank IC for a factor column in a DataFrame."""
+        try:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.sort_values(["asset", "date"])
+            df["fwd_ret_5"] = df.groupby("asset")["close"].shift(-5) / df["close"] - 1
+
+            ics = []
+            for _, group in df.groupby("date"):
+                valid = group[[factor_col, "fwd_ret_5"]].dropna()
+                if len(valid) >= 20:
+                    ric = valid[factor_col].rank().corr(valid["fwd_ret_5"].rank(), method="pearson")
+                    if not np.isnan(ric):
+                        ics.append(ric)
+            return round(float(np.mean(ics)), 4) if ics else 0.0
+        except Exception:
+            return 0.0
+
     def _run_governance(self) -> dict[str, Any]:
         """因子库治理：归档过时/低效因子 + 生命周期 + 拥挤度检测 + 风控。"""
         from quantlab.factor_discovery.runtime import PersistentFactorStore
@@ -366,9 +529,70 @@ class DailyScheduler:
             }
             if crowding.crowded_factor_ids:
                 logger.info("拥挤度检测: %d 个拥挤因子 (%d 个集群)", len(crowding.crowded_factor_ids), len(crowding.clusters))
+                # 拥挤闭环：传递拥挤因子到正交性引导
+                try:
+                    crowded_dirs = set()
+                    for fid in crowding.crowded_factor_ids:
+                        for entry in store.load_library_entries():
+                            if entry.factor_spec.factor_id == fid:
+                                family = entry.factor_spec.family or fid[:8]
+                                crowded_dirs.add(family)
+                                break
+                    avoid_dirs = sorted(crowded_dirs)[:5]
+                    logger.info("拥挤闭环: %d个因子降权, 引导避开方向: %s", len(crowding.crowded_factor_ids), avoid_dirs)
+                    result["crowding"]["crowding_closed_loop"] = {
+                        "penalized_count": len(crowding.crowded_factor_ids),
+                        "avoid_directions": avoid_dirs,
+                    }
+                except Exception as e2:
+                    logger.warning("拥挤闭环处理失败: %s", e2)
         except Exception as exc:
             logger.warning("拥挤度检测失败: %s", exc)
             result["crowding"] = {"status": "failed", "error": str(exc)[:200]}
+
+        # Factor performance curve analysis
+        try:
+            curve_analyzer = FactorCurveAnalyzer()
+            entries = store.load_library_entries()
+            approved = [e for e in entries if str(e.factor_spec.status) == "approved"]
+            if approved:
+                curve_market_df = self._load_data()
+                if not curve_market_df.empty:
+                    from quantlab.factor_discovery.runtime import SafeFactorExecutor
+                    curve_executor = SafeFactorExecutor()
+                    curve_results: dict[str, dict] = {}
+                    for entry in approved:
+                        try:
+                            computed = curve_executor.execute(entry.factor_spec, curve_market_df)
+                            panel = computed.get("factor_panel")
+                            if panel is not None and not panel.empty:
+                                decay = curve_analyzer.ic_decay_curve(
+                                    panel, curve_market_df,
+                                    windows=[5, 10, 20, 40, 60],
+                                )
+                                curve_results[entry.factor_spec.factor_id] = decay
+                        except Exception as exc:
+                            logger.debug("因子 %s 曲线分析失败: %s", entry.factor_spec.factor_id, exc)
+                    result["curves"] = {
+                        "total": len(curve_results),
+                        "details": curve_results,
+                    }
+                    if curve_results:
+                        half_life_factors = {
+                            fid: d["half_life"]
+                            for fid, d in curve_results.items()
+                            if d.get("half_life", 0) > 0
+                        }
+                        result["curves"]["factors_with_half_life"] = len(half_life_factors)
+                        logger.info("因子曲线分析: %d 个因子, %d 个有半衰期",
+                                   len(curve_results), len(half_life_factors))
+                else:
+                    result["curves"] = {"status": "skipped", "reason": "数据为空"}
+            else:
+                result["curves"] = {"status": "skipped", "reason": "无已审批因子"}
+        except Exception as exc:
+            logger.warning("因子曲线分析失败: %s", exc)
+            result["curves"] = {"status": "failed", "error": str(exc)[:200]}
 
         # Risk control assessment
         try:
@@ -496,17 +720,40 @@ class DailyScheduler:
                 effective_directions = list(self._fallback_directions)
                 meta_params = {d: {"rounds": self.evolution_rounds, "candidates": self.max_candidates_per_round} for d in effective_directions}
 
+        # Check if multi-agent should be used
+        use_multi_agent = False
+        if self.use_multi_agent:
+            guidance = self.experience_loop.get_guidance(self.directions[0])
+            total_recorded = guidance.get("total_recorded", 0)
+            if total_recorded > 10:
+                try:
+                    from quantlab.factor_discovery.multi_agent import LLMClient
+                    llm = LLMClient()
+                    llm._load_from_env()
+                    if llm.api_key:
+                        use_multi_agent = True
+                        logger.info("经验记录 %d 条，启用多智能体协作模式", total_recorded)
+                except Exception:
+                    pass
+            if not use_multi_agent:
+                logger.info("经验记录 %d 条（需>10）或LLM未配置，使用模板进化模式", total_recorded)
+
         for direction in effective_directions:
             mp = meta_params.get(direction, {"rounds": self.evolution_rounds, "candidates": self.max_candidates_per_round})
             try:
-                loop = FactorEvolutionLoop(
-                    store=store,
-                    config=EvolutionConfig(
-                        max_rounds=mp["rounds"],
-                        candidates_per_round=mp["candidates"],
-                    ),
-                )
-                result = loop.run(direction=direction, market_df=hub)
+                if use_multi_agent:
+                    result = self._run_evolution_multi_agent(direction, hub, store, mp)
+                else:
+                    loop = FactorEvolutionLoop(
+                        store=store,
+                        config=EvolutionConfig(
+                            max_rounds=mp["rounds"],
+                            candidates_per_round=mp["candidates"],
+                        ),
+                    )
+                    result = loop.run(direction=direction, market_df=hub)
+                    # Record experience from evolved factor specs (real values)
+                    _record_evolution_experience(store, self.experience_loop, direction, result)
                 approved = result.get("approved_count", 0)
                 total_approved += approved
                 all_results.append({
@@ -526,6 +773,61 @@ class DailyScheduler:
             "new_approved": total_approved,
             "directions": all_results,
             "adaptive_selection": self.use_adaptive_directions,
+        }
+
+    def _run_evolution_multi_agent(
+        self, direction: str, hub: "pd.DataFrame", store: Any, meta_params: dict
+    ) -> dict[str, Any]:
+        """使用多智能体协作框架执行因子发现。"""
+        from quantlab.factor_discovery.multi_agent import (
+            FactorMultiAgentOrchestrator,
+            MultiAgentConfig,
+            LLMClient,
+        )
+
+        llm = LLMClient()
+        llm._load_from_env()
+        if not llm.api_key:
+            raise RuntimeError("LLM 未配置，无法使用多智能体模式")
+
+        cfg = MultiAgentConfig(
+            max_r1_r2_rounds=2,
+            max_candidates_per_round=min(meta_params.get("candidates", 5), 3),
+            require_llm=True,
+            enable_risk_neutralization=True,
+            enable_param_search=True,
+            enable_experience_loop=True,
+            enable_orthogonality_guide=True,
+            enable_factor_combination=True,
+            enable_custom_code_gen=True,
+            param_search_trials=20,
+        )
+
+        orchestrator = FactorMultiAgentOrchestrator(config=cfg, llm_client=llm, store=store)
+        ma_result = orchestrator.run(direction=direction, market_df=hub)
+
+        # Parse into same format as evolution results
+        testing = ma_result.get("testing", {})
+        useful = testing.get("useful", 0)
+        marginal = testing.get("marginal", 0)
+        approved_count = useful + marginal
+        verdicts = testing.get("verdicts", [])
+
+        best_score = 0.0
+        for v in verdicts:
+            tr = v.get("test_result", {})
+            score = abs(float(tr.get("rank_ic_mean", 0)))
+            if score > best_score:
+                best_score = score
+
+        logger.info("多智能体 %s: useful=%d marginal=%d best_ic=%.4f",
+                    direction, useful, marginal, best_score)
+
+        return {
+            "approved_count": approved_count,
+            "total_candidates": len(verdicts),
+            "best_score": best_score,
+            "multi_agent_run_id": ma_result.get("run_id", ""),
         }
 
     def _validate_oos(self) -> dict[str, Any]:
@@ -654,6 +956,87 @@ class DailyScheduler:
         screener = DeliveryScreener(data_path=self.data_path)
         return screener.screen()
 
+    def _start_paper_trading(self, deliverable_factor_ids: list[str]) -> dict[str, Any]:
+        """为可交付因子启动纸交易账户。"""
+        if not deliverable_factor_ids:
+            return {"status": "skipped", "reason": "无可交付因子"}
+
+        from quantlab.factor_discovery.runtime import PersistentFactorStore, SafeFactorExecutor
+        from quantlab.trading.broker import PaperBroker, OrderManager
+
+        market_df = self._load_data()
+        if market_df.empty:
+            return {"status": "skipped", "reason": "数据为空"}
+
+        store = PersistentFactorStore()
+        executor = SafeFactorExecutor()
+        library = store.load_library_entries()
+        accounts = []
+
+        output_dir = DATA_DIR / "assistant_data" / "paper_trading"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for entry in library:
+            fid = entry.factor_spec.factor_id
+            if fid not in deliverable_factor_ids:
+                continue
+            try:
+                # Load factor panel
+                computed = executor.execute(entry.factor_spec, market_df)
+                factor_panel = computed.get("factor_panel")
+                if factor_panel is None or len(factor_panel) == 0:
+                    continue
+
+                # Get latest market prices
+                latest_date = market_df["date"].max() if "date" in market_df.columns else ""
+                latest = market_df[market_df["date"] == latest_date] if latest_date else market_df
+                prices: dict[str, float] = {}
+                if "close" in latest.columns and "asset" in latest.columns:
+                    for _, row in latest.iterrows():
+                        prices[str(row["asset"])] = float(row["close"])
+
+                # Create paper broker and rebalance
+                broker = PaperBroker(initial_cash=1_000_000, account_id=f"paper_{fid}")
+                broker.update_prices(prices)
+
+                # Equal-weight allocation based on factor values
+                target_weights: dict[str, float] = {}
+                factor_slice = factor_panel[factor_panel.index.get_level_values("date") == latest_date] if latest_date else factor_panel.iloc[-len(latest):]
+                if len(factor_slice) > 0:
+                    ranked = factor_slice.rank(pct=True)
+                    for asset, val in ranked.items():
+                        if isinstance(asset, tuple):
+                            asset = str(asset[1]) if len(asset) > 1 else str(asset[0])
+                        if val > 0.0 and not pd.isna(val):
+                            target_weights[str(asset)] = float(val)
+
+                # Normalize weights
+                total_w = sum(target_weights.values())
+                if total_w > 0:
+                    target_weights = {a: w / total_w for a, w in target_weights.items()}
+
+                orders = OrderManager(broker).rebalance(target_weights, prices, reason=f"factor={fid}")
+
+                account = broker.get_account()
+                accounts.append({
+                    "factor_id": fid,
+                    "account": account.to_dict(),
+                    "orders": len(orders),
+                })
+            except Exception as exc:
+                logger.warning("纸交易 %s 失败: %s", fid, exc)
+
+        # Save paper trading log
+        if accounts:
+            log_path = output_dir / f"paper_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            log_path.write_text(
+                json.dumps(accounts, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+            logger.info("纸交易: %d 个账户已启动, 日志: %s", len(accounts), log_path)
+
+        return {"status": "success", "accounts": len(accounts), "factor_ids": [a["factor_id"] for a in accounts]}
+
     def _generate_delivery_reports(self, factor_ids: list[str]) -> list[str]:
         """为可交付因子生成报告。"""
         if not factor_ids:
@@ -698,12 +1081,15 @@ class DailyScheduler:
             self.alert_bus = AlertBus()
         return self.alert_bus
 
-    def _load_data(self, apply_survivorship: bool = True) -> pd.DataFrame:
-        """加载市场数据，可选应用幸存者偏差过滤。"""
+    def _load_data(self, apply_survivorship: bool = True, check_quality: bool = True) -> pd.DataFrame:
+        """加载市场数据，可选应用幸存者偏差过滤和质量检查。"""
         try:
             from quantlab.factor_discovery.datahub import DataHub
             hub = DataHub()
             df = hub.load(str(self.data_path), use_cache=False)
+            if check_quality and not df.empty:
+                qr = hub.check_quality(str(self.data_path))
+                logger.info("数据质量检查: score=%.4f", qr.get("score", 0))
         except Exception:
             if self.data_path.exists():
                 df = pd.read_csv(self.data_path)

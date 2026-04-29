@@ -52,6 +52,119 @@ class DataQualityReport:
 
 
 # ---------------------------------------------------------------------------
+# 1b. 数据质量监控
+# ---------------------------------------------------------------------------
+
+class DataQualityMonitor:
+    """数据质量监控器 —— 检测缺失率、数据新鲜度、异常值、重复行。
+
+    使用方式:
+        monitor = DataQualityMonitor()
+        report = monitor.check(data_path)
+        score = monitor.quality_score(report)
+    """
+
+    @staticmethod
+    def check(data_path: str | Path) -> dict[str, Any]:
+        path = Path(data_path)
+        if not path.exists():
+            return {"status": "error", "error": f"文件不存在: {path}"}
+
+        df = pd.read_csv(path)
+        if df.empty:
+            return {"status": "empty", "error": "数据文件为空"}
+
+        report: dict[str, Any] = {
+            "source": str(path),
+            "total_rows": len(df),
+            "total_columns": len(df.columns),
+        }
+
+        # 缺失率 per field
+        missing_rates = {}
+        for col in df.columns:
+            rate = round(float(df[col].isnull().mean()), 6)
+            missing_rates[col] = rate
+        report["missing_rate"] = missing_rates
+
+        # 数据新鲜度 (last date vs today)
+        stale_days = -1
+        date_col = "date" if "date" in df.columns else df.columns[0]
+        try:
+            dates = pd.to_datetime(df[date_col], errors="coerce")
+            last_date = dates.max()
+            if pd.notna(last_date):
+                from datetime import date
+                stale_days = (date.today() - last_date.date()).days
+        except Exception:
+            pass
+        report["stale_date"] = max(0, stale_days)
+
+        # 异常值计数 (values > 5 sigma, per numeric column)
+        outlier_counts: dict[str, int] = {}
+        for col in df.columns:
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            clean = numeric.dropna()
+            if len(clean) > 1:
+                mean = clean.mean()
+                std = clean.std(ddof=0)
+                if std is not None and std > 0:
+                    n_outliers = int((abs(clean - mean) > 5 * std).sum())
+                    if n_outliers > 0:
+                        outlier_counts[col] = n_outliers
+        report["outlier_count"] = outlier_counts
+
+        # 重复行
+        dup_rows = int(df.duplicated().sum())
+        report["duplicate_rows"] = dup_rows
+
+        # 总体评估
+        avg_missing = np.mean(list(missing_rates.values())) if missing_rates else 1.0
+        total_outliers = sum(outlier_counts.values())
+        report["avg_missing_rate"] = round(float(avg_missing), 6)
+        report["total_outliers"] = total_outliers
+        report["status"] = "ok"
+
+        return report
+
+    @staticmethod
+    def quality_score(report: dict[str, Any]) -> float:
+        """0-1 综合质量评分。"""
+        if not report or report.get("status") in ("error", "empty"):
+            return 0.0
+
+        total_rows = max(report.get("total_rows", 1), 1)
+
+        # 完整性: 1 - avg_missing_rate
+        completeness = 1.0 - float(report.get("avg_missing_rate", 1.0))
+        completeness = max(0.0, min(1.0, completeness))
+
+        # 新鲜度: exponential decay based on stale days
+        stale_days = int(report.get("stale_date", 365))
+        freshness = float(np.exp(-stale_days / 30.0))
+        freshness = max(0.0, min(1.0, freshness))
+
+        # 清洁度: 1 - (outlier_fraction)
+        total_outliers = int(report.get("total_outliers", 0))
+        outlier_fraction = total_outliers / float(total_rows * max(report.get("total_columns", 1), 1))
+        cleanliness = 1.0 - outlier_fraction
+        cleanliness = max(0.0, min(1.0, cleanliness))
+
+        score = completeness * 0.4 + freshness * 0.3 + cleanliness * 0.3
+        return round(float(score), 4)
+
+    @staticmethod
+    def _emit_alert(title: str, message: str) -> None:
+        """Lazy import AlertBus to avoid circular deps."""
+        try:
+            from quantlab.assistant.notifier import AlertBus
+            bus = AlertBus()
+            bus.warning(title, message, source="data_quality")
+        except Exception:
+            logger.warning("数据质量告警 (AlertBus 不可用): %s - %s", title, message)
+
+
+# ---------------------------------------------------------------------------
 # 2. 数据源 Provider 抽象
 # ---------------------------------------------------------------------------
 
@@ -244,6 +357,25 @@ class DataHub:
         """获取数据质量报告。"""
         provider = self._providers.get(provider_name or "") or self._default
         return provider.data_quality(Path(data_path))
+
+    def check_quality(
+        self,
+        data_path: str | Path,
+    ) -> dict[str, Any]:
+        """检查数据质量并返回质量报告+评分。
+
+        返回: {"report": {...}, "score": float}
+        如果 score < 0.7，自动通过 AlertBus 发出告警。
+        """
+        report = DataQualityMonitor.check(data_path)
+        score = DataQualityMonitor.quality_score(report)
+        if score < 0.7:
+            DataQualityMonitor._emit_alert(
+                f"数据质量低于阈值: {score:.2f}",
+                f"数据 {data_path} 质量评分={score:.2f}，缺失率={report.get('avg_missing_rate', 0):.4f}，"
+                f"数据滞后={report.get('stale_date', 0)}天，异常值={report.get('total_outliers', 0)}个",
+            )
+        return {"report": report, "score": score}
 
     def invalidate_cache(self, data_path: str | Path | None = None) -> None:
         """清除缓存。"""

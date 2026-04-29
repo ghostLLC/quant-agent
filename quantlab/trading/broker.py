@@ -120,7 +120,13 @@ class PaperBroker(BrokerInterface):
     从现有 CostModel 提取费率参数，确保纸交易结果接近实盘。
     """
 
-    def __init__(self, initial_cash: float = 1_000_000, account_id: str = "") -> None:
+    def __init__(
+        self,
+        initial_cash: float = 1_000_000,
+        account_id: str = "",
+        universe: list[str] | None = None,
+        trade_log_path: str | Path = "",
+    ) -> None:
         from quantlab.trading.cost_model import AShareCostModel
         self.initial_cash = initial_cash
         self.cost_model = AShareCostModel()
@@ -129,12 +135,32 @@ class PaperBroker(BrokerInterface):
         self._positions: dict[str, Position] = {}
         self._orders: dict[str, Order] = {}
         self._prices: dict[str, float] = {}  # asset → latest price
+        self._validator = OrderValidator(broker=self, universe=universe)
+        self._trade_logger = TradeLogger(log_path=trade_log_path)
 
     def update_prices(self, prices: dict[str, float]) -> None:
         """更新最新价格（由 Agent 在下单前调用）。"""
         self._prices.update(prices)
 
     def submit_order(self, asset: str, side: OrderSide, quantity: int, price: float = 0, reason: str = "") -> Order:
+        fill_price = price if price > 0 else self._prices.get(asset, 0)
+
+        # Validate
+        errors = self._validator.validate(asset, side, quantity, fill_price)
+        if errors:
+            order = Order(
+                order_id=f"ord_{uuid4().hex[:8]}",
+                asset=asset,
+                side=side,
+                quantity=quantity,
+                price=price,
+                reason=reason,
+                status=OrderStatus.REJECTED,
+                commission=0.0,
+            )
+            self._orders[order.order_id] = order
+            return order
+
         order = Order(
             order_id=f"ord_{uuid4().hex[:8]}",
             asset=asset,
@@ -143,13 +169,6 @@ class PaperBroker(BrokerInterface):
             price=price,
             reason=reason,
         )
-
-        # Simulate fill
-        fill_price = price if price > 0 else self._prices.get(asset, 0)
-        if fill_price <= 0:
-            order.status = OrderStatus.REJECTED
-            self._orders[order.order_id] = order
-            return order
 
         trade_value = fill_price * quantity * 100  # A股按手，100股/手
 
@@ -187,6 +206,11 @@ class PaperBroker(BrokerInterface):
                     del self._positions[asset]
 
         self._orders[order.order_id] = order
+
+        # Log each fill
+        if order.status == OrderStatus.FILLED:
+            self._trade_logger.log(order)
+
         return order
 
     def cancel_order(self, order_id: str) -> bool:
@@ -266,3 +290,113 @@ class OrderManager:
                 orders.append(order)
 
         return orders
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Broker Factory —— 券商实例创建
+# ═══════════════════════════════════════════════════════════════════
+
+
+class BrokerFactory:
+    """券商工厂 —— 根据类型和配置创建 Broker 实例。"""
+
+    @staticmethod
+    def create(broker_type: str, **config) -> BrokerInterface:
+        """创建券商实例。
+
+        Args:
+            broker_type: "paper" 或未来扩展的类型名
+            **config: 传递给具体 Broker 构造函数的参数
+
+        Returns:
+            BrokerInterface 实例
+
+        Raises:
+            ValueError: 未知的 broker_type
+        """
+        broker_type_lower = broker_type.lower().strip()
+
+        if broker_type_lower == "paper":
+            return PaperBroker(**config)
+
+        raise ValueError(f"未知的券商类型: '{broker_type}'。当前支持: paper")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Order Validator —— 订单校验
+# ═══════════════════════════════════════════════════════════════════
+
+
+class OrderValidator:
+    """订单校验器 —— 在下单前对订单做合法性检查。
+
+    检查项：
+    1. 数量 > 0
+    2. 价格 > 0
+    3. 资产在允许列表中
+    4. 买入时有足够现金
+    """
+
+    def __init__(self, broker: PaperBroker | None = None, universe: list[str] | None = None) -> None:
+        self._broker = broker
+        self._universe = set(universe) if universe else None
+
+    def validate(self, asset: str, side: OrderSide, quantity: int, price: float) -> list[str]:
+        """校验订单参数，返回错误消息列表（空列表表示通过）。"""
+        errors: list[str] = []
+
+        if quantity <= 0:
+            errors.append(f"订单数量必须 > 0，当前: {quantity}")
+
+        if price <= 0:
+            errors.append(f"订单价格必须 > 0，当前: {price}")
+
+        if self._universe is not None and asset not in self._universe:
+            errors.append(f"资产 '{asset}' 不在允许的交易池中")
+
+        if side == OrderSide.BUY and self._broker is not None:
+            trade_value = price * quantity * 100  # A股按手
+            cost_rate = self._broker.cost_model.buy_cost_rate(trade_value)
+            total_cost = trade_value * (1 + cost_rate)
+            if total_cost > self._broker.cash:
+                errors.append(
+                    f"现金不足: 需要 {total_cost:.2f}, 可用 {self._broker.cash:.2f}"
+                )
+
+        return errors
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Trade Logger —— CSV 交易日志
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TradeLogger:
+    """CSV 交易日志记录器。
+
+    列: timestamp, asset, side, qty, price, commission, reason
+    """
+
+    def __init__(self, log_path: str | Path = "") -> None:
+        if not log_path:
+            log_path = Path(__file__).resolve().parents[2] / "data" / "trading" / "trade_log.csv"
+        self.log_path = Path(log_path)
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_header()
+
+    def _ensure_header(self) -> None:
+        if not self.log_path.exists():
+            self.log_path.write_text(
+                "timestamp,asset,side,qty,price,commission,reason\n",
+                encoding="utf-8",
+            )
+
+    def log(self, order: Order) -> None:
+        """记录一笔交易到 CSV。"""
+        line = (
+            f"{order.created_at},{order.asset},{order.side.value},"
+            f"{order.filled_qty},{order.filled_avg_price:.4f},"
+            f"{order.commission:.4f},{order.reason}\n"
+        )
+        with self.log_path.open("a", encoding="utf-8") as f:
+            f.write(line)

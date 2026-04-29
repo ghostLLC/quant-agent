@@ -24,10 +24,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from scipy import stats as sp_stats
 
 from quantlab.config import DEFAULT_CROSS_SECTION_DATA_PATH, DATA_DIR
 
 logger = logging.getLogger(__name__)
+
+ic_history_path = DATA_DIR / "scheduler" / "factor_ic_history.csv"
 
 
 @dataclass(slots=True)
@@ -239,33 +242,42 @@ class FactorDecayMonitor:
             icir_decay = 1.0 - abs(recent_ic["icir"]) / abs(full_ic["icir"])
         icir_decay = max(0.0, icir_decay)
 
-        # 判断状态
+        # 判断状态 —— 优先使用趋势检测；历史不足时回退到单点对比
+        trend_status = check_decay_trend(factor_id, min_days=self.recent_window)
+
         reasons: list[str] = []
         status = "healthy"
         action = "monitor"
 
-        if ic_decay > self.ic_decay_threshold:
-            reasons.append(f"IC 衰减 {ic_decay:.0%}（>{self.ic_decay_threshold:.0%}）")
+        if trend_status == "decaying":
+            trend_info = get_ic_trend(factor_id, min_days=self.recent_window)
+            reasons.append(f"IC 趋势显著下行 (斜率={trend_info['slope']:.6f}, p={trend_info['p_value']:.4f})")
             status = "decayed"
             action = "re_discover"
+        elif trend_status == "insufficient":
+            if ic_decay > self.ic_decay_threshold:
+                reasons.append(f"IC 衰减 {ic_decay:.0%}（>{self.ic_decay_threshold:.0%}）")
+                status = "decayed"
+                action = "re_discover"
 
-        if abs(recent_ic["rank_ic"]) < self.ic_absolute_floor:
-            reasons.append(f"近期 IC 绝对值 {recent_ic['rank_ic']:.4f}（<{self.ic_absolute_floor}）")
-            if status == "healthy":
-                status = "warning"
-                action = "re_evaluate"
+        if status != "decayed":
+            if abs(recent_ic["rank_ic"]) < self.ic_absolute_floor:
+                reasons.append(f"近期 IC 绝对值 {recent_ic['rank_ic']:.4f}（<{self.ic_absolute_floor}）")
+                if status == "healthy":
+                    status = "warning"
+                    action = "re_evaluate"
 
-        if abs(recent_ic["icir"]) < self.icir_floor and abs(full_ic["icir"]) >= self.icir_floor:
-            reasons.append(f"近期 ICIR {recent_ic['icir']:.3f}（<{self.icir_floor}）")
-            if status == "healthy":
-                status = "warning"
-                action = "re_evaluate"
+            if abs(recent_ic["icir"]) < self.icir_floor and abs(full_ic["icir"]) >= self.icir_floor:
+                reasons.append(f"近期 ICIR {recent_ic['icir']:.3f}（<{self.icir_floor}）")
+                if status == "healthy":
+                    status = "warning"
+                    action = "re_evaluate"
 
-        if recent_ic["ic_positive_ratio"] < self.ic_positive_ratio_floor:
-            reasons.append(f"近期 IC 正比例 {recent_ic['ic_positive_ratio']:.1%}（<{self.ic_positive_ratio_floor:.0%}）")
-            if status == "healthy":
-                status = "warning"
-                action = "re_evaluate"
+            if recent_ic["ic_positive_ratio"] < self.ic_positive_ratio_floor:
+                reasons.append(f"近期 IC 正比例 {recent_ic['ic_positive_ratio']:.1%}（<{self.ic_positive_ratio_floor:.0%}）")
+                if status == "healthy":
+                    status = "warning"
+                    action = "re_evaluate"
 
         return DecayCheckResult(
             factor_id=factor_id,
@@ -340,3 +352,126 @@ class FactorDecayMonitor:
             json.dumps(records, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
+
+
+def record_daily_ic(factor_id: str, date_str: str, rank_ic: float) -> None:
+    """Append one daily IC observation to the time series CSV."""
+    ic_history_path.parent.mkdir(parents=True, exist_ok=True)
+    row = pd.DataFrame([{"factor_id": factor_id, "date": date_str, "rank_ic": rank_ic}])
+    if ic_history_path.exists():
+        row.to_csv(ic_history_path, mode="a", header=False, index=False)
+    else:
+        row.to_csv(ic_history_path, index=False)
+
+
+def get_ic_trend(factor_id: str, min_days: int = 20) -> dict[str, Any]:
+    """Read IC history, run linear regression on IC vs time, return slope and p-value."""
+    if not ic_history_path.exists():
+        return {"slope": 0.0, "p_value": 1.0, "n_days": 0, "error": "no history"}
+    df = pd.read_csv(ic_history_path)
+    fdf = df[df["factor_id"] == factor_id].copy()
+    if len(fdf) < min_days:
+        return {"slope": 0.0, "p_value": 1.0, "n_days": len(fdf), "error": "insufficient history"}
+    fdf["date"] = pd.to_datetime(fdf["date"])
+    fdf = fdf.sort_values("date")
+    fdf["t"] = range(len(fdf))
+    try:
+        slope, intercept, r_value, p_value, std_err = sp_stats.linregress(fdf["t"], fdf["rank_ic"])
+        return {"slope": round(slope, 6), "p_value": round(p_value, 6), "n_days": len(fdf)}
+    except Exception:
+        return {"slope": 0.0, "p_value": 1.0, "n_days": len(fdf), "error": "regression failed"}
+
+
+def check_decay_trend(factor_id: str, min_days: int = 20) -> str:
+    """Return 'decaying' if IC slope < -0.001 and p < 0.05, 'stable' otherwise.
+
+    Returns 'insufficient' when not enough history is available.
+    """
+    trend = get_ic_trend(factor_id, min_days)
+    if trend.get("n_days", 0) < min_days:
+        return "insufficient"
+    if trend["slope"] < -0.001 and trend["p_value"] < 0.05:
+        return "decaying"
+    return "stable"
+
+
+def record_all_daily_ic() -> dict[str, Any]:
+    """Record daily IC for all factors in the factor library.
+
+    Uses the default cross-section data path and the SafeFactorExecutor.
+    """
+    from quantlab.factor_discovery.runtime import PersistentFactorStore, SafeFactorExecutor
+
+    store = PersistentFactorStore()
+    library = store.load_library_entries()
+    if not library:
+        return {"status": "skipped", "reason": "no factors in library"}
+
+    try:
+        from quantlab.factor_discovery.datahub import DataHub
+        hub = DataHub()
+        market_df = hub.load(str(DEFAULT_CROSS_SECTION_DATA_PATH), use_cache=False)
+    except Exception:
+        path = DEFAULT_CROSS_SECTION_DATA_PATH
+        if path.exists():
+            market_df = pd.read_csv(path)
+        else:
+            return {"status": "failed", "error": "data not found"}
+
+    if market_df.empty:
+        return {"status": "failed", "error": "empty market data"}
+
+    executor = SafeFactorExecutor()
+    now_str = pd.Timestamp.now().strftime("%Y-%m-%d")
+    recorded = 0
+    failed = 0
+
+    for entry in library:
+        try:
+            computed = executor.execute(entry.factor_spec, market_df)
+            panel = computed.get("factor_panel")
+            if panel is None or panel.empty or "factor_value" not in panel.columns:
+                failed += 1
+                continue
+            panel = panel.copy()
+            panel["date"] = pd.to_datetime(panel["date"])
+            # Requires close for forward return
+            if "close" not in panel.columns:
+                merged = panel.merge(
+                    market_df[["date", "asset", "close"]],
+                    on=["date", "asset"], how="left",
+                )
+                panel = merged
+            if "close" not in panel.columns:
+                failed += 1
+                continue
+            panel["forward_return"] = (
+                panel.groupby("asset")["close"].shift(-1) / panel["close"] - 1.0
+            )
+            panel = panel.dropna(subset=["factor_value", "forward_return"])
+            if panel.empty:
+                failed += 1
+                continue
+            rank_ic_series = (
+                panel.groupby("date", sort=False)
+                .apply(
+                    lambda g: g["factor_value"].rank(pct=True).corr(
+                        g["forward_return"].rank(pct=True)
+                    )
+                    if len(g) >= 5
+                    and g["factor_value"].nunique() > 1
+                    and g["forward_return"].nunique() > 1
+                    else np.nan
+                )
+                .dropna()
+            )
+            if rank_ic_series.empty:
+                failed += 1
+                continue
+            avg_ic = float(rank_ic_series.mean())
+            record_daily_ic(entry.factor_spec.factor_id, now_str, round(avg_ic, 6))
+            recorded += 1
+        except Exception:
+            failed += 1
+
+    return {"status": "success", "date": now_str, "recorded": recorded, "failed": failed}

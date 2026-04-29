@@ -376,29 +376,24 @@ result = orchestrator.run(direction="动量+反转交叉", market_df=df)
 - [x] 纸交易券商接口
 - [x] 多品种扩展架构
 
+- [x] 多智能体路径接入 DailyScheduler（经验回路 >10 条自动走 LLM 6-Agent 路径）
+- [x] 经验回路记录真实 block_tree 和 input_fields
+- [x] 因子 IC 时间序列持久化 + 趋势检验
+- [x] 组合 vs 基准对比（等权/市值加权超额 IC）
+- [x] 拥挤度检测闭环联动（自动降权 + 方向引导）
+- [x] R1/R2 跨运行上下文记忆
+- [x] 因子表现曲线跟踪（IC decay curve + 参数敏感性）
+- [x] 纸交易接入调度器
+- [x] Ridge 滚动窗口组合优化
+- [x] 券商完善（OrderValidator + TradeLogger + BrokerFactory）
+- [x] 期货品种模板（基差/期限结构/持仓量动量）
+- [x] 数据质量自动监控
+- [x] 因子版本追踪（parent_factor_id + get_evolution_tree()）
+- [x] 报告格式扩展（HTML + CSV/Parquet 导出）
+
 ### 待做
-
-**P0 — 链路闭合**
-- [ ] 多智能体路径接入 DailyScheduler（LLM 配好了但每日管线还在用模板进化）
-- [ ] 经验回路记录真实 block_tree 和 input_fields（当前写的是空字段和占位符）
-- [ ] 因子 IC 时间序列持久化（区分永久衰减和 regime 切换的临时 IC 下降）
-
-**P1 — 因子质量**
-- [ ] 组合 vs 基准对比（等权/市值加权超额 IC、归因分析）
-- [ ] 拥挤度检测闭环联动（检测到拥挤 → 自动降权 → 引导 R1 避开）
-- [ ] R1/R2 跨运行上下文记忆（上次的假设和审查结论传递到下一次）
-- [ ] 因子表现曲线跟踪（IC decay curve、参数敏感性分析）
-
-**P2 — 交易闭环**
-- [ ] 纸交易接入调度器（筛选通过的因子自动进入 PaperBroker 跟踪）
-- [ ] 滚动窗口组合优化（Ridge/LASSO 回归选因子、协方差估计）
 - [ ] 实盘券商对接（华泰 xtquant / 聚宽 / 米筐）
-
-**P3 — 规模化**
-- [ ] 更多品种数据接入（股指期货 / 商品期货 / 可转债）
-- [ ] 数据质量自动监控（缺失率、过期数据告警）
-- [ ] 因子版本追踪（mutation/crossover 保留 parent 引用，回溯进化路径）
-- [ ] 报告格式扩展（HTML/DataFrame 导出）
+- [ ] 更多品种数据接入（商品期货 / 可转债）
 - [ ] Web 管理面板
 - [ ] 测试覆盖率提升（当前 32 个测试集中在 blocks/portfolio/trading）
 

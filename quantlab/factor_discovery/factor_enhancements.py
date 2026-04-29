@@ -384,7 +384,8 @@ class FactorCombiner:
     1. IC 加权组合：权重 = IC_mean / sum(|IC_mean|)
     2. 等权组合：所有因子等权
     3. 最大 ICIR 组合：迭代搜索权重使 ICIR 最大化
-    4. 正交选择：从因子池中选出互相正交的子集
+    4. Ridge 组合：L2 正则化最小二乘估计最优权重
+    5. 正交选择：从因子池中选出互相正交的子集
     """
 
     def __init__(self, date_col: str = "date", asset_col: str = "asset") -> None:
@@ -402,6 +403,10 @@ class FactorCombiner:
         if not factor_panels:
             raise ValueError("因子面板为空")
 
+        # Ridge 走专用路径
+        if method == "ridge":
+            return self.ridge_combine(factor_panels, market_df, correlation_threshold)
+
         # 1. 正交选择
         selected_ids = self._orthogonal_selection(factor_panels, correlation_threshold)
         selected_panels = {fid: factor_panels[fid] for fid in selected_ids}
@@ -414,6 +419,23 @@ class FactorCombiner:
 
         # 3. 计算权重
         weights = self._compute_weights(ic_stats, method)
+
+        # 3.5 拥挤度惩罚
+        crowding_scores = self._get_crowding_scores()
+        penalized = 0
+        if crowding_scores:
+            for fid in list(weights.keys()):
+                cs = crowding_scores.get(fid, 0)
+                if cs > 0.6:
+                    weights[fid] *= 0.5
+                    penalized += 1
+            if penalized:
+                # Re-normalize weights
+                total = sum(weights.values())
+                if total > 0:
+                    for fid in weights:
+                        weights[fid] = round(weights[fid] / total, 4)
+                logger.info("拥挤降权: %d 个因子权重减半", penalized)
 
         # 4. 加权组合
         combined = self._weighted_combine(selected_panels, weights)
@@ -435,6 +457,236 @@ class FactorCombiner:
             coverage=combined_ic_data["coverage"],
             method=method,
         )
+
+    def ridge_combine(
+        self,
+        factor_panels: dict[str, pd.Series],
+        market_df: pd.DataFrame,
+        correlation_threshold: float = 0.6,
+        alpha: float = 0.1,
+    ) -> FactorCombinationResult:
+        """Ridge 回归组合：L2 正则化最小二乘估计最优权重。
+
+        1. 对每个因子，在每个日期计算 top-quintile vs bottom-quintile 的前向收益差
+        2. 用 Ridge 回归估计使组合收益最优的权重
+        3. 与 IC 加权权重做对比
+
+        边界情况：因子数 < 3 或有效日期数 < 20 时回退到 IC 加权。
+        """
+        selected_ids = self._orthogonal_selection(factor_panels, correlation_threshold)
+        selected_panels = {fid: factor_panels[fid] for fid in selected_ids}
+
+        # 计算各因子的 IC 统计（回退 + 对比用）
+        ic_stats = {}
+        for fid, fv in selected_panels.items():
+            ic_stats[fid] = self._compute_single_ic(fv, market_df)
+
+        ic_weights = self._compute_weights(ic_stats, "ic_weighted")
+
+        if len(selected_panels) < 3:
+            # 因子太少，回退到 IC 加权
+            combined = self._weighted_combine(selected_panels, ic_weights)
+            combined_ic_data = self._compute_single_ic(combined, market_df)
+            pairwise_corr = self._compute_pairwise_correlation(selected_panels)
+            return FactorCombinationResult(
+                combination_id=f"combo_{uuid4().hex[:8]}",
+                factor_ids=selected_ids,
+                weights=ic_weights,
+                combined_ic=combined_ic_data["ic_mean"],
+                combined_icir=combined_ic_data["ic_ir"],
+                combined_rank_ic=combined_ic_data["rank_ic_mean"],
+                pairwise_correlations=pairwise_corr,
+                coverage=combined_ic_data["coverage"],
+                method="ridge_fallback_ic",
+            )
+
+        # 1. 构建因子收益矩阵 (dates × factors)
+        try:
+            ridge_weights = self._estimate_ridge_weights(selected_panels, market_df, alpha)
+
+            if ridge_weights is None:
+                # 日期不足，回退到 IC 加权
+                combined = self._weighted_combine(selected_panels, ic_weights)
+                combined_ic_data = self._compute_single_ic(combined, market_df)
+                pairwise_corr = self._compute_pairwise_correlation(selected_panels)
+                return FactorCombinationResult(
+                    combination_id=f"combo_{uuid4().hex[:8]}",
+                    factor_ids=selected_ids,
+                    weights=ic_weights,
+                    combined_ic=combined_ic_data["ic_mean"],
+                    combined_icir=combined_ic_data["ic_ir"],
+                    combined_rank_ic=combined_ic_data["rank_ic_mean"],
+                    pairwise_correlations=pairwise_corr,
+                    coverage=combined_ic_data["coverage"],
+                    method="ridge_fallback_dates",
+                )
+
+            # 2. 加权组合
+            combined = self._weighted_combine(selected_panels, ridge_weights)
+
+            # 3. 计算组合 IC
+            combined_ic_data = self._compute_single_ic(combined, market_df)
+
+            # 4. 计算两两相关性
+            pairwise_corr = self._compute_pairwise_correlation(selected_panels)
+
+            return FactorCombinationResult(
+                combination_id=f"combo_{uuid4().hex[:8]}",
+                factor_ids=selected_ids,
+                weights=ridge_weights,
+                combined_ic=combined_ic_data["ic_mean"],
+                combined_icir=combined_ic_data["ic_ir"],
+                combined_rank_ic=combined_ic_data["rank_ic_mean"],
+                pairwise_correlations=pairwise_corr,
+                coverage=combined_ic_data["coverage"],
+                method="ridge",
+            )
+        except Exception:
+            combined = self._weighted_combine(selected_panels, ic_weights)
+            combined_ic_data = self._compute_single_ic(combined, market_df)
+            pairwise_corr = self._compute_pairwise_correlation(selected_panels)
+            return FactorCombinationResult(
+                combination_id=f"combo_{uuid4().hex[:8]}",
+                factor_ids=selected_ids,
+                weights=ic_weights,
+                combined_ic=combined_ic_data["ic_mean"],
+                combined_icir=combined_ic_data["ic_ir"],
+                combined_rank_ic=combined_ic_data["rank_ic_mean"],
+                pairwise_correlations=pairwise_corr,
+                coverage=combined_ic_data["coverage"],
+                method="ridge_error_fallback",
+            )
+
+    def _estimate_ridge_weights(
+        self,
+        factor_panels: dict[str, pd.Series],
+        market_df: pd.DataFrame,
+        alpha: float = 0.1,
+    ) -> dict[str, float] | None:
+        """用 Ridge 回归估计最优因子权重。
+
+        返回 None 表示数据不足需要回退。
+        """
+        fids = list(factor_panels.keys())
+        n_factors = len(fids)
+
+        # 构建因子收益矩阵：对每个因子在每个日期计算 top-quintile vs bottom-quintile 前向收益
+        aligned = self._prepare_market_frame(market_df)
+
+        if "fwd_ret" not in aligned.columns:
+            return None
+
+        # 计算每个因子的每日收益（长端收益 - 短端收益）
+        factor_returns: dict[str, pd.Series] = {}
+        for fid in fids:
+            fv = factor_panels[fid]
+            # 按日期分组，计算每日因子收益
+            daily_ret = self._factor_daily_long_short(fv, aligned)
+            if daily_ret is not None:
+                factor_returns[fid] = daily_ret
+
+        if len(factor_returns) < 3:
+            return None
+
+        # 对齐所有因子到共同日期
+        common_dates = None
+        for fr in factor_returns.values():
+            dates = set(fr.dropna().index)
+            if common_dates is None:
+                common_dates = dates
+            else:
+                common_dates = common_dates & dates
+
+        if common_dates is None or len(common_dates) < 20:
+            return None
+
+        common_dates = sorted(common_dates)
+
+        # 构建 X (dates × factors) 和 y (等权组合收益)
+        X_list = []
+        for fid in fids:
+            fr = factor_returns.get(fid)
+            if fr is None:
+                return None
+            X_list.append(fr.reindex(common_dates).values)
+
+        X = np.column_stack(X_list)
+        y = np.mean(X, axis=1)  # 等权组合作为目标
+
+        # 去除 NaN 行
+        valid = ~np.isnan(X).any(axis=1) & ~np.isnan(y)
+        X_valid = X[valid]
+        y_valid = y[valid]
+
+        if len(y_valid) < 20 or X_valid.shape[1] < 1:
+            return None
+
+        # Ridge: 手动添加正则化（hstack alpha*I 到 X）
+        # 等价于求解 ||Xw - y||^2 + alpha * ||w||^2 的最小值
+        n_samples, n_features = X_valid.shape
+
+        # 通过增广矩阵法实现 Ridge
+        X_aug = np.vstack([X_valid, np.sqrt(alpha) * np.eye(n_features)])
+        y_aug = np.hstack([y_valid, np.zeros(n_features)])
+
+        try:
+            w, residuals, rank, s = np.linalg.lstsq(X_aug, y_aug, rcond=None)
+        except np.linalg.LinAlgError:
+            return None
+
+        # 归一化权重使和的正部 = 1
+        w_abs = np.abs(w)
+        w_sum = w_abs.sum()
+        if w_sum < 1e-10:
+            return None
+
+        normalized = w_abs / w_sum
+        return {fid: round(float(normalized[i]), 4) for i, fid in enumerate(fids)}
+
+    def _factor_daily_long_short(
+        self, factor_values: pd.Series, aligned: pd.DataFrame
+    ) -> pd.Series | None:
+        """计算因子每日的长短组合收益（top-quintile - bottom-quintile）。"""
+        try:
+            working = aligned.copy()
+            working["_factor"] = factor_values
+            working = working.dropna(subset=["_factor", "fwd_ret"])
+
+            date_returns = []
+            for date_val, group in working.groupby(level=self.date_col):
+                if len(group) < 20:
+                    continue
+                q = group["_factor"].quantile(0.2)
+                top80 = group[group["_factor"] >= group["_factor"].quantile(0.8)]
+                bot20 = group[group["_factor"] <= group["_factor"].quantile(0.2)]
+                if len(top80) > 0 and len(bot20) > 0:
+                    ls_ret = top80["fwd_ret"].mean() - bot20["fwd_ret"].mean()
+                    date_returns.append((date_val, ls_ret))
+
+            if not date_returns:
+                return None
+
+            dates, rets = zip(*date_returns)
+            return pd.Series(rets, index=pd.DatetimeIndex(list(dates)), name="factor_ret")
+        except Exception:
+            return None
+
+    def _prepare_market_frame(self, market_df: pd.DataFrame) -> pd.DataFrame:
+        """准备对齐的 market DataFrame（含 fwd_ret）。"""
+        aligned = market_df.copy()
+        if self.date_col in aligned.columns and self.asset_col in aligned.columns:
+            aligned = aligned.set_index([self.date_col, self.asset_col])
+        elif "ts_code" in aligned.columns:
+            aligned = aligned.rename(columns={"ts_code": self.asset_col})
+            if self.date_col in aligned.columns:
+                aligned = aligned.set_index([self.date_col, self.asset_col])
+
+        aligned = aligned.sort_values([self.asset_col, self.date_col])
+
+        if "close" in aligned.columns and "fwd_ret" not in aligned.columns:
+            aligned["fwd_ret"] = aligned.groupby(self.asset_col)["close"].shift(-5) / aligned["close"] - 1
+
+        return aligned
 
     def _orthogonal_selection(
         self,
@@ -460,6 +712,16 @@ class FactorCombiner:
                 selected.append(fid)
 
         return selected
+
+    @staticmethod
+    def _get_crowding_scores() -> dict[str, float]:
+        """从因子库获取拥挤度评分。"""
+        try:
+            detector = CrowdingDetector()
+            report = detector.detect(correlation_threshold=0.6, min_factors=2)
+            return report.crowding_scores
+        except Exception:
+            return {}
 
     def _compute_single_ic(self, factor_values: pd.Series, market_df: pd.DataFrame) -> dict[str, float]:
         """计算单个因子的 IC 统计。"""
@@ -1079,6 +1341,7 @@ class OrthogonalityGuide:
                 "saturated_directions": [],
                 "unexplored_directions": ["量价背离", "资金流向", "基本面变化率", "波动率结构"],
                 "orthogonality_hint": "因子库为空，所有方向均可自由探索。",
+                "crowding_penalty": {},
             }
 
         # 分析已有因子的字段覆盖
@@ -1125,6 +1388,25 @@ class OrthogonalityGuide:
 
         orth_hint = " ".join(hint_parts) if hint_parts else "当前因子库较小，各方向均可探索。"
 
+        # 拥挤度惩罚信息
+        crowding_penalty: dict[str, Any] = {}
+        try:
+            detector = CrowdingDetector()
+            report = detector.detect(correlation_threshold=0.6, min_factors=2)
+            crowded_dirs = set()
+            for o in outcomes:
+                if o.direction[:20] in report.crowded_factor_ids or any(
+                    report.crowding_scores.get(o.direction[:20], 0) > 0.6
+                ):
+                    crowded_dirs.add(o.direction[:20])
+            crowding_penalty = {
+                "crowded_factor_ids": report.crowded_factor_ids[:5],
+                "crowding_scores": report.crowding_scores,
+                "avoid_directions": sorted(crowded_dirs),
+            }
+        except Exception:
+            pass
+
         return {
             "covered_fields": sorted(field_counts.items(), key=lambda x: x[1], reverse=True),
             "covered_structures": sorted(structure_counts.items(), key=lambda x: x[1], reverse=True)[:10],
@@ -1133,6 +1415,7 @@ class OrthogonalityGuide:
             "underused_fields": underused,
             "orthogonality_hint": orth_hint,
             "total_existing_factors": len(outcomes),
+            "crowding_penalty": crowding_penalty,
         }
 
     def _load_outcomes(self) -> list[FactorOutcome]:
@@ -1495,3 +1778,233 @@ class RegimeDetector:
             "bear_ic": round(float(np.mean(regime_ics["bear"])), 4) if regime_ics["bear"] else 0.0,
             "sideways_ic": round(float(np.mean(regime_ics["sideways"])), 4) if regime_ics["sideways"] else 0.0,
         }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 9. 因子表现曲线分析 —— IC 衰减曲线 + 参数敏感度 + 稳定性
+# ═══════════════════════════════════════════════════════════════════
+
+class FactorCurveAnalyzer:
+    """因子表现曲线分析器。
+
+    提供三个维度的曲线分析：
+    1. IC 衰减曲线 —— 不同前瞻窗口下的 IC，评估因子预测期限
+    2. 参数敏感度 —— 参数变化对 IC 的影响，评估因子稳定性
+    3. 稳定性评分 —— IC 序列的自相关，越高越稳定
+    """
+
+    def __init__(
+        self,
+        date_col: str = "date",
+        asset_col: str = "asset",
+    ) -> None:
+        self.date_col = date_col
+        self.asset_col = asset_col
+
+    def ic_decay_curve(
+        self,
+        factor_values: pd.Series,
+        market_df: pd.DataFrame,
+        windows: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """计算不同前瞻收益窗口下的 IC，描绘 IC 衰减曲线。
+
+        Args:
+            factor_values: 因子值 Series
+            market_df: 市场 DataFrame
+            windows: 前瞻窗口列表，默认 [5, 10, 20, 40, 60]
+
+        Returns:
+            {curves: {window: rank_ic_mean}, best_window, best_ic, half_life}
+        """
+        if windows is None:
+            windows = [5, 10, 20, 40, 60]
+
+        aligned = market_df.copy()
+        aligned["_factor"] = factor_values
+
+        if self.date_col in aligned.columns and self.asset_col in aligned.columns:
+            aligned = aligned.set_index([self.date_col, self.asset_col])
+        elif "ts_code" in aligned.columns:
+            aligned = aligned.rename(columns={"ts_code": self.asset_col})
+            if self.date_col in aligned.columns:
+                aligned = aligned.set_index([self.date_col, self.asset_col])
+
+        if "close" not in aligned.columns:
+            return {"curves": {}, "best_window": 0, "best_ic": 0.0, "half_life": 0, "error": "missing close"}
+
+        aligned = aligned.sort_values([self.asset_col, self.date_col])
+
+        curves: dict[int, float] = {}
+        for w in windows:
+            aligned["_fwd_ret"] = (
+                aligned.groupby(self.asset_col)["close"].shift(-w) / aligned["close"] - 1.0
+            )
+            valid = aligned[["_factor", "_fwd_ret"]].dropna()
+            if len(valid) < 100:
+                curves[w] = 0.0
+                continue
+            rank_ics = []
+            for _, group in valid.groupby(level=self.date_col):
+                if len(group) >= 20:
+                    ric = group["_factor"].rank().corr(group["_fwd_ret"].rank(), method="pearson")
+                    if not np.isnan(ric):
+                        rank_ics.append(ric)
+            curves[w] = round(float(np.mean(rank_ics)), 6) if rank_ics else 0.0
+
+        best_window = max(curves, key=lambda k: abs(curves[k])) if curves else 0
+        best_ic = curves.get(best_window, 0.0)
+
+        half_life = 0
+        peak = abs(best_ic)
+        if peak > 0.001:
+            for w in sorted(windows):
+                if abs(curves.get(w, 0.0)) < peak * 0.5:
+                    half_life = w
+                    break
+
+        return {
+            "curves": curves,
+            "best_window": best_window,
+            "best_ic": best_ic,
+            "half_life": half_life,
+        }
+
+    def parameter_sensitivity(
+        self,
+        factor_id: str,
+        block_tree_dict: dict,
+        market_df: pd.DataFrame,
+        param_name: str,
+        values: list,
+    ) -> dict[str, Any]:
+        """测试因子对某个参数的敏感度。
+
+        Args:
+            factor_id: 因子 ID
+            block_tree_dict: 积木树字典
+            market_df: 市场数据
+            param_name: 参数名（在积木树中递归搜索）
+            values: 待测试的参数值列表
+
+        Returns:
+            {best_value, worst_value, best_ic, worst_ic, curve: [{value, ic}], param_name}
+        """
+        from .blocks import Block, BlockExecutor
+
+        curve: list[dict[str, Any]] = []
+        best_value = values[0]
+        worst_value = values[0]
+        best_ic = -999.0
+        worst_ic = 999.0
+
+        for v in values:
+            try:
+                modified = self._set_param(block_tree_dict, param_name, v)
+                root_block = Block.from_dict(modified)
+                executor = BlockExecutor(
+                    date_col=self.date_col, asset_col=self.asset_col,
+                )
+                fv = executor.execute(root_block, market_df)
+
+                ic = 0.0
+                if "close" in market_df.columns:
+                    aligned = market_df.copy()
+                    aligned["_factor"] = fv
+                    if self.date_col in aligned.columns and self.asset_col in aligned.columns:
+                        aligned = aligned.set_index([self.date_col, self.asset_col])
+                    aligned = aligned.sort_values([self.asset_col, self.date_col])
+                    aligned["_fwd_ret"] = (
+                        aligned.groupby(self.asset_col)["close"].shift(-5) / aligned["close"] - 1.0
+                    )
+                    valid = aligned[["_factor", "_fwd_ret"]].dropna()
+                    rank_ics = []
+                    for _, group in valid.groupby(level=self.date_col):
+                        if len(group) >= 20:
+                            ric = group["_factor"].rank().corr(
+                                group["_fwd_ret"].rank(), method="pearson"
+                            )
+                            if not np.isnan(ric):
+                                rank_ics.append(ric)
+                    ic = round(float(np.mean(rank_ics)), 6) if rank_ics else 0.0
+
+                curve.append({"value": v, "ic": ic})
+
+                if ic > best_ic:
+                    best_ic = ic
+                    best_value = v
+                if ic < worst_ic:
+                    worst_ic = ic
+                    worst_value = v
+
+            except Exception as exc:
+                curve.append({"value": v, "ic": 0.0, "error": str(exc)[:100]})
+
+        return {
+            "factor_id": factor_id,
+            "param_name": param_name,
+            "best_value": best_value,
+            "worst_value": worst_value,
+            "best_ic": best_ic,
+            "worst_ic": worst_ic,
+            "curve": curve,
+        }
+
+    @staticmethod
+    def stability_score(ic_series: pd.Series) -> dict[str, float]:
+        """计算 IC 序列的稳定性评分（基于自相关）。
+
+        自相关越高说明因子的 IC 越稳定，可预测性越强。
+        返回 lag-1 到 lag-5 的自相关系数和综合评分。
+
+        Args:
+            ic_series: IC 时间序列
+
+        Returns:
+            {acf_lag1..lag5, stability_score, mean_ic, ic_std}
+        """
+        clean = ic_series.dropna()
+        if len(clean) < 10:
+            return {"acf_lag1": 0.0, "stability_score": 0.0, "mean_ic": 0.0, "ic_std": 0.0}
+
+        acf: dict[str, float] = {}
+        for lag in range(1, min(6, len(clean) // 3)):
+            corr = clean.autocorr(lag=lag)
+            acf[f"acf_lag{lag}"] = round(float(corr), 4) if pd.notna(corr) else 0.0
+
+        # Fill missing lags with 0
+        for lag in range(1, 6):
+            key = f"acf_lag{lag}"
+            if key not in acf:
+                acf[key] = 0.0
+
+        mean_acf = np.mean(list(acf.values()))
+        stability = round(float(mean_acf), 4)
+
+        return {
+            **acf,
+            "stability_score": stability,
+            "mean_ic": round(float(clean.mean()), 6),
+            "ic_std": round(float(clean.std()), 6),
+        }
+
+    def _set_param(self, tree: dict, param_name: str, value: Any) -> dict:
+        """深度复制并设置积木树中的参数值（递归搜索 params）。"""
+        import copy
+        tree = copy.deepcopy(tree)
+
+        def _walk(node: dict) -> bool:
+            if not isinstance(node, dict):
+                return False
+            params = node.get("params", {})
+            if param_name in params:
+                params[param_name] = value
+                return True
+            for child_key in ("input_block", "left", "right", "cond", "cond_block"):
+                child = node.get(child_key)
+                if isinstance(child, dict) and _walk(child):
+                    return True
+            return False
+
+        _walk(tree)
+        return tree

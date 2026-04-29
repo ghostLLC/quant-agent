@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from datetime import datetime
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -207,6 +208,24 @@ class LLMClient:
         self.reasoning_effort = reasoning_effort
         self.temperature = temperature
         self.timeout = timeout
+        self.context: list[dict] = []
+
+    def add_context(self, role: str, content: str) -> None:
+        """记录跨运行上下文条目。最多保留 20 条。"""
+        self.context.append({"role": role, "content": content, "timestamp": time.time()})
+        if len(self.context) > 20:
+            self.context = self.context[-20:]
+
+    def get_context_summary(self) -> str:
+        """返回最近 5 条上下文摘要，用于注入 prompt。"""
+        if not self.context:
+            return "（暂无历史决策上下文）"
+        recent = self.context[-5:]
+        lines = []
+        for i, entry in enumerate(recent):
+            ts = datetime.fromtimestamp(entry["timestamp"]).strftime("%m-%d %H:%M")
+            lines.append(f"[{ts}] {entry['role']}: {entry['content'][:200]}")
+        return "【近期决策上下文】\n" + "\n".join(lines)
 
     def _load_from_env(self) -> None:
         """从 .env 或环境变量补充缺失的配置。"""
@@ -456,11 +475,6 @@ class R1HypothesisGenerator(BaseAgent):
         if library_context:
             lib_summary = f"\n已有因子库（前10个）：{json.dumps(library_context[:10], ensure_ascii=False, default=str)}"
 
-        # 事前正交性引导
-        orth_addon = ""
-        if self._orth_guide:
-            orth_addon = self._orth_guide.generate_orthogonality_prompt_addon(direction)
-
         # 可用积木算子
         from .blocks import OperatorRegistry
         ops_desc = []
@@ -474,6 +488,9 @@ class R1HypothesisGenerator(BaseAgent):
         # 可用数据字段
         available_fields = context_fields_description()
 
+        # 跨运行上下文摘要
+        cross_run_context = self.llm.get_context_summary() if self.llm else ""
+
         # 事前正交性引导
         orth_addon = ""
         if self._orth_guide:
@@ -481,6 +498,8 @@ class R1HypothesisGenerator(BaseAgent):
 
         user_prompt = f"""研究方向：{direction}
 需要生成 {max_candidates} 个因子假设。
+
+{cross_run_context}
 
 可用数据字段：
 {available_fields}
@@ -1102,6 +1121,7 @@ class T1Backtester(BaseAgent):
                     "hypothesis_id": payload["hypothesis"].get("hypothesis_id", ""),
                     "factor_spec": factor_spec_dict,
                     "test_result": test_result,
+                    "block_tree": best_tree,
                 },
                 thread_id=msg.thread_id,
             )
@@ -1364,6 +1384,13 @@ class FactorMultiAgentOrchestrator:
             approved = [r for r in r2_result.get("reviews", []) if r.get("decision") in ("approve", "revise")]
             logger.info(f"[{run_id}] R1→R2 Round {r1r2_round + 1}: generated={r1_result.get('generated', 0)}, approved={len(approved)}")
 
+            # Record R1/R2 decisions to cross-run context
+            for r in r2_result.get("reviews", []):
+                self.llm.add_context(
+                    f"R2_review({r.get('decision', '?')})",
+                    f"direction={direction}, scores=logic:{r.get('logic_score',0)}/novelty:{r.get('novelty_score',0)}/feasibility:{r.get('feasibility_score',0)}, reasons={r.get('weaknesses',[])}, suggestions={r.get('suggestions','')[:100]}",
+                )
+
             if not approved and r1r2_round > 0:
                 break  # 第二轮还是没有 approve，停止
 
@@ -1402,19 +1429,55 @@ class FactorMultiAgentOrchestrator:
         # ── Phase 5: Experience Recording ──
         if cfg.enable_experience_loop:
             try:
+                # Build lookup: hypothesis_id → {hypothesis, block_tree}
+                factor_ctx: dict[str, dict] = {}
+                for msg in self.bus._history:
+                    if msg.msg_type == "assembled_factor":
+                        hyp_payload = msg.payload.get("hypothesis", {})
+                        hid = hyp_payload.get("hypothesis_id", "")
+                        if hid:
+                            factor_ctx[hid] = {
+                                "hypothesis": hyp_payload,
+                                "block_tree": msg.payload.get("block_tree", {}),
+                            }
+
+                def _block_tree_op_chain(tree: dict, max_len: int = 60) -> str:
+                    """Extract op chain description from block tree dict."""
+                    if not isinstance(tree, dict):
+                        return "unknown"
+                    parts = []
+                    bt = tree.get("block_type", tree.get("type", ""))
+                    if bt:
+                        parts.append(bt)
+                    op = tree.get("op", "")
+                    if op:
+                        parts.append(op)
+                    for child_key in ("input_block", "left", "right", "cond"):
+                        child = tree.get(child_key)
+                        if isinstance(child, dict):
+                            parts.append(_block_tree_op_chain(child, max_len))
+                            break
+                    chain = "→".join(parts)
+                    return chain[:max_len]
+
                 outcomes = []
                 for v in verdicts:
                     test_result = v.get("test_result", {})
                     if test_result.get("status") != "success":
                         continue
+                    hid = v.get("hypothesis_id", "")
+                    ctx = factor_ctx.get(hid, {})
+                    hyp_dict = ctx.get("hypothesis", {})
+                    block_tree = ctx.get("block_tree", {})
+
                     outcomes.append(FactorOutcome(
-                        outcome_id=f"outcome_{run_id}_{v.get('hypothesis_id', uuid4().hex[:8])}",
+                        outcome_id=f"outcome_{run_id}_{hid or uuid4().hex[:8]}",
                         direction=direction,
-                        hypothesis_intuition="",
-                        mechanism="",
-                        pseudocode="",
-                        input_fields=[],
-                        block_tree_desc="multi_agent",
+                        hypothesis_intuition=hyp_dict.get("intuition", ""),
+                        mechanism=hyp_dict.get("mechanism", ""),
+                        pseudocode=hyp_dict.get("pseudocode", ""),
+                        input_fields=hyp_dict.get("input_fields", []),
+                        block_tree_desc=_block_tree_op_chain(block_tree),
                         verdict=v.get("verdict", "useless"),
                         rank_ic=abs(float(test_result.get("rank_ic_mean", 0))),
                         ic_ir=abs(float(test_result.get("ic_ir", 0))),
