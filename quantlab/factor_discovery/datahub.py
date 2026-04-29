@@ -438,3 +438,35 @@ class MultiAssetContext:
 
     def registered_classes(self) -> list[str]:
         return list(self._configs.keys())
+
+    def register_all_known_asset_classes(self) -> None:
+        """注册所有已知资产类别（A-share, index_future, commodity_future, convertible_bond）。
+
+        使用占位数据路径，仅建立上下文路由框架，不做真实数据拉取。
+        各资产类别的因子模板在对应的 *_factors.py 中定义。
+        """
+        # A-share — 默认权益
+        self.register(
+            "a_share_equity",
+            data_path="data/zz800.csv",
+            store_dir="assistant_data/equity",
+        )
+
+        # 期货（指数 + 商品）
+        try:
+            from quantlab.factor_discovery.futures_factors import register_futures_in_context
+            register_futures_in_context(self)
+        except ImportError:
+            # 回退：仅注册指数期货
+            self.register(
+                "index_future",
+                data_path="data/futures_placeholder.csv",
+                store_dir="assistant_data/futures",
+            )
+
+        # 可转债
+        try:
+            from quantlab.factor_discovery.convertible_bond_factors import register_cb_in_context
+            register_cb_in_context(self)
+        except ImportError:
+            pass

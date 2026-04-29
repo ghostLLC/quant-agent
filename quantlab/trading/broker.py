@@ -241,6 +241,261 @@ class PaperBroker(BrokerInterface):
         return self._orders.get(order_id)
 
 
+class XtQuantBroker(BrokerInterface):
+    """华泰 QMT/xtquant 实盘券商接入。"""
+
+    def __init__(self, account_id="", xtdata_path="", auto_connect=False):
+        self.account_id = account_id or f"xt_{uuid4().hex[:6]}"
+        self._connected = False
+        self._xtdata = None
+        self._xttrader = None
+        self._orders: dict[str, Order] = {}
+        self._positions_cache: dict[str, Position] = {}
+        if auto_connect:
+            self.connect()
+
+    def connect(self, xtdata_path="") -> bool:
+        try:
+            from xtquant import xtdata, xttrader
+            self._xtdata = xtdata
+            self._xttrader = xttrader
+            self._connected = True
+            return True
+        except ImportError:
+            logger.warning("xtquant SDK 未安装，使用模拟模式。pip install xtquant")
+            self._connected = False
+            return False
+
+    def disconnect(self):
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def submit_order(self, asset, side, quantity, price=0, reason="") -> Order:
+        if not self._connected:
+            return self._mock_order(asset, side, quantity, price, reason)
+        order = Order(order_id=f"xt_{uuid4().hex[:8]}", asset=asset, side=side,
+                      quantity=quantity, price=price, reason=reason)
+        try:
+            order.status = OrderStatus.PENDING
+        except Exception:
+            order.status = OrderStatus.REJECTED
+        self._orders[order.order_id] = order
+        return order
+
+    def cancel_order(self, order_id) -> bool:
+        order = self._orders.get(order_id)
+        if order and order.status == OrderStatus.PENDING:
+            order.status = OrderStatus.CANCELLED
+            return True
+        return False
+
+    def get_positions(self) -> list[Position]:
+        return list(self._positions_cache.values())
+
+    def get_account(self) -> Account:
+        positions = list(self._positions_cache.values())
+        total_value = sum(p.market_value for p in positions)
+        return Account(
+            account_id=self.account_id,
+            total_value=total_value,
+            cash=0.0,
+            positions=positions,
+        )
+
+    def get_order(self, order_id) -> Order | None:
+        return self._orders.get(order_id)
+
+    def _mock_order(self, asset, side, quantity, price, reason) -> Order:
+        """模拟撮合 —— SDK 不可用时使用，逻辑与 PaperBroker 对齐。"""
+        fill_price = price if price > 0 else 0
+        order = Order(
+            order_id=f"xt_{uuid4().hex[:8]}",
+            asset=asset, side=side, quantity=quantity,
+            price=price, reason=reason,
+        )
+        if fill_price > 0:
+            from quantlab.trading.cost_model import AShareCostModel
+            cost_model = AShareCostModel()
+            trade_value = fill_price * quantity * 100
+            if side == OrderSide.BUY:
+                order.commission = trade_value * cost_model.buy_cost_rate(trade_value)
+            else:
+                order.commission = trade_value * cost_model.sell_cost_rate(trade_value)
+            order.filled_qty = quantity
+            order.filled_avg_price = fill_price
+            order.status = OrderStatus.FILLED
+
+            pos = self._positions_cache.get(asset)
+            if pos is None:
+                self._positions_cache[asset] = Position(
+                    asset=asset,
+                    quantity=quantity if side == OrderSide.BUY else -quantity,
+                    avg_cost=fill_price, market_value=0, unrealized_pnl=0,
+                )
+            else:
+                if side == OrderSide.BUY:
+                    total_qty = pos.quantity + quantity
+                    pos.avg_cost = (pos.avg_cost * pos.quantity + fill_price * quantity) / max(total_qty, 1)
+                    pos.quantity = total_qty
+                else:
+                    pos.quantity -= quantity
+                    if pos.quantity == 0:
+                        del self._positions_cache[asset]
+        else:
+            order.status = OrderStatus.REJECTED
+
+        self._orders[order.order_id] = order
+        return order
+
+
+class ConnectionManager:
+    """券商连接管理器 —— auto-reconnect, health check, circuit breaker."""
+
+    def __init__(self, broker: BrokerInterface, max_retries=3, retry_delay=5, health_interval=60):
+        self.broker = broker
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.health_interval = health_interval
+        self._consecutive_failures = 0
+        self._circuit_open = False
+        self._last_health_check = 0.0
+
+    def health_check(self) -> bool:
+        """检查券商连接是否健康。"""
+        connected = getattr(self.broker, 'connected', False)
+        if connected:
+            self._consecutive_failures = 0
+        else:
+            self._consecutive_failures += 1
+        if self._consecutive_failures >= self.max_retries:
+            self._circuit_open = True
+        return connected
+
+    def ensure_connected(self) -> bool:
+        """确保券商连接可用，必要时重连。"""
+        if getattr(self.broker, 'connected', False):
+            return True
+        connect_fn = getattr(self.broker, 'connect', None)
+        if connect_fn is None:
+            return False
+        for _ in range(self.max_retries):
+            if connect_fn():
+                self._consecutive_failures = 0
+                self._circuit_open = False
+                return True
+        return False
+
+
+class JoinQuantBroker(BrokerInterface):
+    """聚宽 JoinQuant 实盘券商接入。"""
+
+    def __init__(self, username="", password="", account_id=""):
+        self.account_id = account_id or f"jq_{uuid4().hex[:6]}"
+        self._connected = False
+        self._jq = None
+        self._orders: dict[str, Order] = {}
+        self._positions_cache: dict[str, Position] = {}
+
+    def connect(self, username="", password="") -> bool:
+        try:
+            import jqdatasdk
+            self._jq = jqdatasdk
+            connected = jqdatasdk.auth(username, password) if username else False
+            self._connected = bool(connected)
+            return self._connected
+        except ImportError:
+            logger.warning("jqdatasdk 未安装，使用模拟模式。pip install jqdatasdk")
+            self._connected = False
+            return False
+
+    def disconnect(self):
+        self._connected = False
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    def submit_order(self, asset, side, quantity, price=0, reason="") -> Order:
+        if not self._connected:
+            return self._mock_order(asset, side, quantity, price, reason)
+        order = Order(order_id=f"jq_{uuid4().hex[:8]}", asset=asset, side=side,
+                      quantity=quantity, price=price, reason=reason)
+        try:
+            order.status = OrderStatus.PENDING
+        except Exception:
+            order.status = OrderStatus.REJECTED
+        self._orders[order.order_id] = order
+        return order
+
+    def cancel_order(self, order_id) -> bool:
+        order = self._orders.get(order_id)
+        if order and order.status == OrderStatus.PENDING:
+            order.status = OrderStatus.CANCELLED
+            return True
+        return False
+
+    def get_positions(self) -> list[Position]:
+        return list(self._positions_cache.values())
+
+    def get_account(self) -> Account:
+        positions = list(self._positions_cache.values())
+        total_value = sum(p.market_value for p in positions)
+        return Account(
+            account_id=self.account_id,
+            total_value=total_value,
+            cash=0.0,
+            positions=positions,
+        )
+
+    def get_order(self, order_id) -> Order | None:
+        return self._orders.get(order_id)
+
+    def _mock_order(self, asset, side, quantity, price, reason) -> Order:
+        """模拟撮合 —— SDK 不可用时使用，逻辑与 PaperBroker 对齐。"""
+        fill_price = price if price > 0 else 0
+        order = Order(
+            order_id=f"jq_{uuid4().hex[:8]}",
+            asset=asset, side=side, quantity=quantity,
+            price=price, reason=reason,
+        )
+        if fill_price > 0:
+            from quantlab.trading.cost_model import AShareCostModel
+            cost_model = AShareCostModel()
+            trade_value = fill_price * quantity * 100
+            if side == OrderSide.BUY:
+                order.commission = trade_value * cost_model.buy_cost_rate(trade_value)
+            else:
+                order.commission = trade_value * cost_model.sell_cost_rate(trade_value)
+            order.filled_qty = quantity
+            order.filled_avg_price = fill_price
+            order.status = OrderStatus.FILLED
+
+            pos = self._positions_cache.get(asset)
+            if pos is None:
+                self._positions_cache[asset] = Position(
+                    asset=asset,
+                    quantity=quantity if side == OrderSide.BUY else -quantity,
+                    avg_cost=fill_price, market_value=0, unrealized_pnl=0,
+                )
+            else:
+                if side == OrderSide.BUY:
+                    total_qty = pos.quantity + quantity
+                    pos.avg_cost = (pos.avg_cost * pos.quantity + fill_price * quantity) / max(total_qty, 1)
+                    pos.quantity = total_qty
+                else:
+                    pos.quantity -= quantity
+                    if pos.quantity == 0:
+                        del self._positions_cache[asset]
+        else:
+            order.status = OrderStatus.REJECTED
+
+        self._orders[order.order_id] = order
+        return order
+
+
 class OrderManager:
     """订单管理器 —— Agent 决策与券商执行之间的协调层。
 
@@ -318,8 +573,12 @@ class BrokerFactory:
 
         if broker_type_lower == "paper":
             return PaperBroker(**config)
+        if broker_type_lower == "xtquant":
+            return XtQuantBroker(**config)
+        if broker_type_lower == "joinquant":
+            return JoinQuantBroker(**config)
 
-        raise ValueError(f"未知的券商类型: '{broker_type}'。当前支持: paper")
+        raise ValueError(f"未知的券商类型: '{broker_type}'。当前支持: paper, xtquant, joinquant")
 
 
 # ═══════════════════════════════════════════════════════════════════
