@@ -397,6 +397,8 @@ result = orchestrator.run(direction="动量+反转交叉", market_df=df)
 **P3 — 规模化**
 - [ ] 更多品种数据接入（股指期货 / 商品期货 / 可转债）
 - [ ] 数据质量自动监控（缺失率、过期数据告警）
+- [ ] 因子版本追踪（mutation/crossover 保留 parent 引用，回溯进化路径）
+- [ ] 报告格式扩展（HTML/DataFrame 导出）
 - [ ] Web 管理面板
 - [ ] 测试覆盖率提升（当前 32 个测试集中在 blocks/portfolio/trading）
 
