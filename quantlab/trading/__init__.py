@@ -10,7 +10,8 @@
 - portfolio.py     因子信号 → 组合权重
 - simulator.py     模拟交易引擎
 """
-from .cost_model import CostModel, AShareCostModel
+from .cost_model import AShareCostModel, CostModel
+from .live_simulator import LiveSimulator, run_live_simulation
 from .portfolio import FactorPortfolioConstructor, PortfolioWeightScheme
 from .simulator import FactorPortfolioSimulator, SimulationResult
 
@@ -21,4 +22,6 @@ __all__ = [
     "PortfolioWeightScheme",
     "FactorPortfolioSimulator",
     "SimulationResult",
+    "LiveSimulator",
+    "run_live_simulation",
 ]

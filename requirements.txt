@@ -3,3 +3,4 @@ numpy>=1.26.0
 scipy>=1.10.0
 akshare>=1.18.55
 tushare>=1.4.0
+flask>=3.0.0

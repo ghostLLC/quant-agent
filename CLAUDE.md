@@ -65,11 +65,17 @@ python fetch_hs300_etf.py
 # Run backtest
 python run_backtest.py --data data/hs300_etf.csv --strategy ma_cross
 
-# Run test suite (118 tests)
-D:\quant-agent\.venv\Scripts\python.exe -m pytest tests/ -v
+# Run test suite (139 tests); skip network-dependent scheduler/decay tests
+D:\quant-agent\.venv\Scripts\python.exe -m pytest tests/ -v --ignore=tests/test_scheduler.py --ignore=tests/test_decay_agent.py
 
 # Run a single test file
 D:\quant-agent\.venv\Scripts\python.exe -m pytest tests/test_blocks.py -v
+
+# Start web dashboard (port 8080)
+D:\quant-agent\.venv\Scripts\python.exe -m quantlab.web.app
+
+# Ingest news into knowledge base
+D:\quant-agent\.venv\Scripts\python.exe -m quantlab.knowledge.news_ingestor --keywords "量化因子,A股" --max 10
 
 # Lint
 D:\quant-agent\.venv\Scripts\python.exe -m ruff check quantlab/
@@ -120,8 +126,22 @@ Data Refresh → Decay Monitor → Evolution Search (LLM-first) → OOS Validati
 
 **`quantlab/knowledge/`** — External research knowledge:
 - `FactorKnowledgeBase.get_knowledge_context(direction) → str` — Returns markdown-formatted academic factor research knowledge for LLM prompt injection.
+- `NewsIngestor` — Fetches A-share news via akshare, extracts factor research knowledge via LLM (rule-based fallback), deduplicates and persists to `assistant_data/news_knowledge.json`.
 
 **`quantlab/trading/`** — Trading engine: cost model, portfolio construction, simulator, risk control, broker interface.
+- `LiveSimulator` — Daily paper trading simulator: combines multi-factor signals, rebalances via OrderManager, persists NAV/positions/trades to `assistant_data/live_portfolio.json`.
+
+**`quantlab/web/`** — Web dashboard (Flask):
+- `GET /api/status` — factor count, pipeline runs, alerts
+- `GET /api/factors` — factor library list with IC stats
+- `GET /api/runs` — recent 20 run records
+- `GET /api/alerts` — recent alerts sorted by severity
+- `GET /` — HTML dashboard with auto-refresh
+
+**`quantlab/metrics/gpu_accelerator.py`** — GPU-accelerated IC computation:
+- `GpuAccelerator.gpu_available() → bool` — CuPy + GPU detection
+- `GpuAccelerator.compute_rank_ic_gpu()` — GPU Rank IC with automatic CPU fallback
+- `GpuAccelerator.batch_compute_ic()` — Batch multi-factor IC computation
 
 ### Critical Design Patterns
 
