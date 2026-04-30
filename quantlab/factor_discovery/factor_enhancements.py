@@ -248,7 +248,7 @@ class RiskNeutralizer:
         self.date_col = date_col
         self.asset_col = asset_col
 
-    def neutralize(self, factor_values: pd.Series, market_df: pd.DataFrame) -> pd.Series:
+    def neutralize(self, factor_values: pd.Series, market_df: pd.DataFrame) -> tuple[pd.Series, dict[str, float]]:
         """对因子值做风险中性化，返回中性化后的因子值。"""
         result = factor_values.copy()
         exposure = {}
@@ -656,7 +656,6 @@ class FactorCombiner:
             for date_val, group in working.groupby(level=self.date_col):
                 if len(group) < 20:
                     continue
-                q = group["_factor"].quantile(0.2)
                 top80 = group[group["_factor"] >= group["_factor"].quantile(0.8)]
                 bot20 = group[group["_factor"] <= group["_factor"].quantile(0.2)]
                 if len(top80) > 0 and len(bot20) > 0:
@@ -720,55 +719,14 @@ class FactorCombiner:
             detector = CrowdingDetector()
             report = detector.detect(correlation_threshold=0.6, min_factors=2)
             return report.crowding_scores
-        except Exception:
+        except Exception as exc:
+            logger.warning("Crowding detection failed, proceeding unpenalized: %s", exc)
             return {}
 
     def _compute_single_ic(self, factor_values: pd.Series, market_df: pd.DataFrame) -> dict[str, float]:
         """计算单个因子的 IC 统计。"""
-        try:
-            aligned = market_df.copy()
-            aligned["_factor"] = factor_values
-
-            if self.date_col in aligned.columns and self.asset_col in aligned.columns:
-                aligned = aligned.set_index([self.date_col, self.asset_col])
-            elif "ts_code" in aligned.columns:
-                aligned = aligned.rename(columns={"ts_code": self.asset_col})
-                if self.date_col in aligned.columns:
-                    aligned = aligned.set_index([self.date_col, self.asset_col])
-
-            # 计算下期收益
-            if "close" in aligned.columns:
-                aligned = aligned.sort_values([self.asset_col, self.date_col])
-                aligned["fwd_ret_5"] = aligned.groupby(self.asset_col)["close"].shift(-5) / aligned["close"] - 1
-            else:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            # 截面 Rank IC
-            rank_ics = []
-            for date_val, group in aligned.groupby(level=self.date_col):
-                valid = group[["_factor", "fwd_ret_5"]].dropna()
-                if len(valid) >= 20:
-                    ric = valid["_factor"].rank().corr(valid["fwd_ret_5"].rank(), method="pearson")
-                    if not np.isnan(ric):
-                        rank_ics.append(ric)
-
-            if not rank_ics:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            ic_mean = float(np.mean(rank_ics))
-            ic_std = float(np.std(rank_ics))
-            ic_ir = ic_mean / ic_std if ic_std > 0 else 0.0
-            coverage = float(factor_values.notna().mean())
-
-            return {
-                "ic_mean": round(ic_mean, 4),
-                "rank_ic_mean": round(ic_mean, 4),
-                "ic_ir": round(ic_ir, 4),
-                "coverage": round(coverage, 4),
-            }
-        except Exception as exc:
-            logger.warning(f"IC 计算失败: {exc}")
-            return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
+        from quantlab.metrics import compute_rank_ic
+        return compute_rank_ic(factor_values, market_df, date_col=self.date_col, asset_col=self.asset_col)
 
     def _compute_weights(self, ic_stats: dict[str, dict], method: str) -> dict[str, float]:
         """计算组合权重。"""
@@ -1050,47 +1008,8 @@ class ParameterSearcher:
 
     def _compute_ic(self, factor_values: pd.Series, market_df: pd.DataFrame) -> dict[str, float]:
         """计算因子 IC。"""
-        try:
-            aligned = market_df.copy()
-            aligned["_factor"] = factor_values
-
-            if self.date_col in aligned.columns and self.asset_col in aligned.columns:
-                aligned = aligned.set_index([self.date_col, self.asset_col])
-            elif "ts_code" in aligned.columns:
-                aligned = aligned.rename(columns={"ts_code": self.asset_col})
-                if self.date_col in aligned.columns:
-                    aligned = aligned.set_index([self.date_col, self.asset_col])
-
-            if "close" in aligned.columns:
-                aligned = aligned.sort_values([self.asset_col, self.date_col])
-                aligned["fwd_ret_5"] = aligned.groupby(self.asset_col)["close"].shift(-5) / aligned["close"] - 1
-            else:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            rank_ics = []
-            for date_val, group in aligned.groupby(level=self.date_col):
-                valid = group[["_factor", "fwd_ret_5"]].dropna()
-                if len(valid) >= 20:
-                    ric = valid["_factor"].rank().corr(valid["fwd_ret_5"].rank(), method="pearson")
-                    if not np.isnan(ric):
-                        rank_ics.append(ric)
-
-            if not rank_ics:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            ic_mean = float(np.mean(rank_ics))
-            ic_std = float(np.std(rank_ics))
-            ic_ir = ic_mean / ic_std if ic_std > 0 else 0.0
-            coverage = float(factor_values.notna().mean())
-
-            return {
-                "ic_mean": round(ic_mean, 4),
-                "rank_ic_mean": round(ic_mean, 4),
-                "ic_ir": round(ic_ir, 4),
-                "coverage": round(coverage, 4),
-            }
-        except Exception:
-            return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
+        from quantlab.metrics import compute_rank_ic
+        return compute_rank_ic(factor_values, market_df, date_col=self.date_col, asset_col=self.asset_col)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1134,6 +1053,7 @@ class CustomCodeGenerator:
         "abs", "max", "min", "sum", "len", "range", "enumerate", "zip",
         "sorted", "reversed", "round", "float", "int", "bool", "str",
         "list", "dict", "set", "tuple", "type", "isinstance", "True", "False", "None",
+        "__import__",  # needed for pandas/numpy import inside sandbox
     }
 
     SAFE_MODULES = {"pandas", "np", "numpy"}
@@ -1244,10 +1164,14 @@ def compute_factor(df):
         return code, "模板生成（无 LLM）"
 
     def _safety_check(self, code: str) -> dict[str, Any]:
-        """检查代码安全性。"""
-        reasons = []
+        """检查代码安全性 —— AST 级别验证 + 子字符串黑名单双重防御。"""
+        reasons: list[str] = []
 
-        # 禁止的关键词
+        # 第一层：AST 级别验证
+        ast_reasons = self._ast_validate(code)
+        reasons.extend(ast_reasons)
+
+        # 第二层：子字符串黑名单（兜底防御）
         forbidden = [
             "import os", "import sys", "import subprocess", "import shutil",
             "open(", "exec(", "eval(", "__import__", "compile(",
@@ -1256,7 +1180,6 @@ def compute_factor(df):
             "__builtins__", "__globals__", "__locals__",
             "getattr", "setattr", "delattr", "globals()", "locals()",
         ]
-
         for keyword in forbidden:
             if keyword in code:
                 reasons.append(f"禁止使用: {keyword}")
@@ -1266,6 +1189,88 @@ def compute_factor(df):
             reasons.append("缺少 compute_factor 函数定义")
 
         return {"safe": len(reasons) == 0, "reasons": reasons}
+
+    def _ast_validate(self, code: str) -> list[str]:
+        """AST 级别代码安全验证。
+
+        使用 Python AST 模块做结构化检查，比子字符串黑名单更难绕过。
+        """
+        import ast
+
+        reasons: list[str] = []
+
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            return [f"语法错误: {exc}"]
+
+        # 允许的属性访问白名单（pandas/numpy 常用操作）
+        allowed_attrs = {
+            "mean", "std", "sum", "min", "max", "rank", "shift",
+            "rolling", "groupby", "corr", "cov", "fillna", "dropna",
+            "replace", "clip", "pct_change", "diff", "abs", "log",
+            "sqrt", "where", "isin", "notna", "isna", "sort_values",
+            "reset_index", "iloc", "loc", "shape", "dtype", "T",
+            "values", "index", "columns", "name", "copy", "astype",
+            "apply", "transform", "agg", "pipe", "rename", "merge",
+            "join", "concat", "quantile", "describe", "value_counts",
+            "unique", "nunique", "to_numpy", "to_list",
+            "array", "flatten", "reshape", "zeros", "ones", "full",
+            "arange", "linspace", "nan", "inf", "abs", "sign", "exp",
+            "sqrt", "log", "log10", "sin", "cos", "tan",
+        }
+
+        class SandboxVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.reasons: list[str] = []
+
+            def visit_Import(self, node: ast.Import) -> None:
+                for alias in node.names:
+                    name = alias.name.split(".")[0]
+                    if name not in {"pandas", "numpy"}:
+                        self.reasons.append(f"禁止导入: {alias.name}")
+                self.generic_visit(node)
+
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                if node.module is None:
+                    return
+                name = node.module.split(".")[0]
+                if name not in {"pandas", "numpy"}:
+                    self.reasons.append(f"禁止导入: {node.module}")
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if isinstance(node.func, ast.Name):
+                    if node.func.id in {"eval", "exec", "compile", "open", "__import__"}:
+                        self.reasons.append(f"禁止调用: {node.func.id}")
+                # Check for getattr/setattr/delattr calls
+                if isinstance(node.func, ast.Attribute):
+                    if isinstance(node.func.value, ast.Name):
+                        if node.func.attr in {"__import__", "__subclasses__", "__init_subclass__"}:
+                            self.reasons.append(f"禁止调用魔术方法: {node.func.attr}")
+                self.generic_visit(node)
+
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                # 禁止 dunder 属性访问（如 __class__.__globals__.__mro__）
+                attr = node.attr
+                if isinstance(attr, str) and attr.startswith("__") and attr.endswith("__"):
+                    if attr not in {"__name__", "__doc__", "__init__", "__len__", "__dict__"}:
+                        self.reasons.append(f"禁止访问 dunder 属性: {attr}")
+                    else:
+                        pass  # allow safe dunders
+                self.generic_visit(node)
+
+            def visit_Subscript(self, node: ast.Subscript) -> None:
+                # 防止 __builtins__['eval'] 等方式
+                if isinstance(node.value, ast.Name) and node.value.id == "__builtins__":
+                    self.reasons.append("禁止访问 __builtins__")
+                self.generic_visit(node)
+
+        visitor = SandboxVisitor()
+        visitor.visit(tree)
+        reasons.extend(visitor.reasons)
+
+        return reasons
 
     def _sandbox_execute(self, code: str, market_df: pd.DataFrame) -> dict[str, Any]:
         """在受限环境中执行代码。"""
@@ -1338,6 +1343,7 @@ class OrthogonalityGuide:
             return {
                 "covered_fields": [],
                 "covered_structures": [],
+                "total_existing_factors": 0,
                 "saturated_directions": [],
                 "unexplored_directions": ["量价背离", "资金流向", "基本面变化率", "波动率结构"],
                 "orthogonality_hint": "因子库为空，所有方向均可自由探索。",

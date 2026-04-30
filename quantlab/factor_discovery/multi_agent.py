@@ -415,10 +415,11 @@ class R1HypothesisGenerator(BaseAgent):
         max_candidates = context.get("max_candidates", 3)
         memory_context = context.get("memory_context", {})
         library_context = context.get("library_context", [])
+        knowledge_context = context.get("knowledge_context", "")
         self._orth_guide = context.get("orth_guide") or self._orth_guide
 
         if self.llm and self.llm.api_key:
-            hypotheses = self._generate_via_llm(direction, max_candidates, memory_context, library_context)
+            hypotheses = self._generate_via_llm(direction, max_candidates, memory_context, library_context, knowledge_context)
         else:
             hypotheses = self._generate_via_template(direction, max_candidates)
 
@@ -445,8 +446,9 @@ class R1HypothesisGenerator(BaseAgent):
         max_candidates: int,
         memory_context: dict[str, Any],
         library_context: list[dict[str, Any]],
+        knowledge_context: str = "",
     ) -> list[dict[str, Any]]:
-        """通过 LLM 深度推理生成因子假设，集成经验学习回路和正交性引导。"""
+        """通过 LLM 深度推理生成因子假设，集成经验学习回路、正交性引导和外部知识。"""
         # 构造经验上下文（增强版：包含结构统计和方向洞察）
         exp_summary = ""
         if memory_context:
@@ -496,11 +498,16 @@ class R1HypothesisGenerator(BaseAgent):
         if self._orth_guide:
             orth_addon = self._orth_guide.generate_orthogonality_prompt_addon(direction)
 
+        # 外部研究知识
+        knowledge_section = ""
+        if knowledge_context:
+            knowledge_section = f"\n外部研究知识：\n{knowledge_context}\n"
+
         user_prompt = f"""研究方向：{direction}
 需要生成 {max_candidates} 个因子假设。
 
 {cross_run_context}
-
+{knowledge_section}
 可用数据字段：
 {available_fields}
 
@@ -1175,54 +1182,8 @@ class T1Backtester(BaseAgent):
 
     def _compute_ic(self, factor_values: pd.Series, market_df: pd.DataFrame) -> dict[str, Any]:
         """计算 IC 指标。"""
-        try:
-            # 构造下一期收益标签
-            if "close" not in market_df.columns:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            # 对齐索引
-            aligned = market_df.copy()
-            aligned["factor"] = factor_values
-
-            # 计算下期收益
-            if "ts_code" in aligned.columns:
-                asset_col = "ts_code"
-            elif "asset" in aligned.columns:
-                asset_col = "asset"
-            else:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            aligned = aligned.sort_values([asset_col, "date"])
-            aligned["fwd_ret_5"] = aligned.groupby(asset_col)["close"].shift(-5) / aligned["close"] - 1
-
-            # 截面 IC
-            date_col = "date"
-            rank_ics = []
-            for date_val, group in aligned.groupby(date_col):
-                valid = group[["factor", "fwd_ret_5"]].dropna()
-                if len(valid) >= 20:
-                    rank_ic = valid["factor"].rank().corr(valid["fwd_ret_5"].rank(), method="pearson")
-                    if not np.isnan(rank_ic):
-                        rank_ics.append(rank_ic)
-
-            if not rank_ics:
-                return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-            rank_ic_mean = float(np.mean(rank_ics))
-            ic_std = float(np.std(rank_ics))
-            ic_ir = rank_ic_mean / ic_std if ic_std > 0 else 0.0
-            coverage = len(factor_values.dropna()) / len(factor_values) if len(factor_values) > 0 else 0.0
-
-            return {
-                "ic_mean": round(rank_ic_mean, 4),
-                "rank_ic_mean": round(rank_ic_mean, 4),
-                "ic_ir": round(ic_ir, 4),
-                "coverage": round(float(coverage), 4),
-            }
-
-        except Exception as exc:
-            logger.warning(f"IC 计算失败: {exc}")
-            return {"ic_mean": 0.0, "rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
+        from quantlab.metrics import compute_rank_ic
+        return compute_rank_ic(factor_values, market_df)
 
 
 class T2Validator(BaseAgent):
@@ -1293,6 +1254,7 @@ class MultiAgentConfig:
     enable_orthogonality_guide: bool = True  # 事前正交性引导
     enable_factor_combination: bool = True  # 多因子组合
     enable_custom_code_gen: bool = True  # P3 定制代码生成
+    enable_knowledge_injection: bool = True  # 注入外部量化因子研究知识
     param_search_trials: int = 20  # 参数搜索最大尝试数
 
 
@@ -1357,6 +1319,17 @@ class FactorMultiAgentOrchestrator:
             memory_context = self._get_memory_context(direction)
         library_context = self._get_library_context()
 
+        # 获取外部研究知识上下文
+        knowledge_context = ""
+        if cfg.enable_knowledge_injection:
+            try:
+                from quantlab.knowledge import FactorKnowledgeBase
+                kb = FactorKnowledgeBase()
+                knowledge_context = kb.get_knowledge_context(direction)
+                logger.info(f"[{run_id}] 知识注入: direction={direction}")
+            except Exception as exc:
+                logger.debug("知识注入失败: %s", exc)
+
         all_hypotheses = []
         all_verdicts = []
 
@@ -1371,6 +1344,7 @@ class FactorMultiAgentOrchestrator:
                 "memory_context": memory_context,
                 "library_context": library_context,
                 "orth_guide": self.orth_guide,
+                "knowledge_context": knowledge_context,
                 "thread_id": run_id,
                 "iteration": r1r2_round,
             })

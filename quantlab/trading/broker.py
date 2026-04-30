@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -276,14 +277,7 @@ class XtQuantBroker(BrokerInterface):
     def submit_order(self, asset, side, quantity, price=0, reason="") -> Order:
         if not self._connected:
             return self._mock_order(asset, side, quantity, price, reason)
-        order = Order(order_id=f"xt_{uuid4().hex[:8]}", asset=asset, side=side,
-                      quantity=quantity, price=price, reason=reason)
-        try:
-            order.status = OrderStatus.PENDING
-        except Exception:
-            order.status = OrderStatus.REJECTED
-        self._orders[order.order_id] = order
-        return order
+        raise NotImplementedError("xtquant live order submission not yet implemented")
 
     def cancel_order(self, order_id) -> bool:
         order = self._orders.get(order_id)
@@ -421,14 +415,7 @@ class JoinQuantBroker(BrokerInterface):
     def submit_order(self, asset, side, quantity, price=0, reason="") -> Order:
         if not self._connected:
             return self._mock_order(asset, side, quantity, price, reason)
-        order = Order(order_id=f"jq_{uuid4().hex[:8]}", asset=asset, side=side,
-                      quantity=quantity, price=price, reason=reason)
-        try:
-            order.status = OrderStatus.PENDING
-        except Exception:
-            order.status = OrderStatus.REJECTED
-        self._orders[order.order_id] = order
-        return order
+        raise NotImplementedError("joinquant live order submission not yet implemented")
 
     def cancel_order(self, order_id) -> bool:
         order = self._orders.get(order_id)

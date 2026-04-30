@@ -88,21 +88,62 @@ FACTOR_FAMILIES: dict[str, dict[str, Any]] = {
 # 2. DSL 算子库 —— Hubble DSL约束思路
 # ---------------------------------------------------------------------------
 
+def _build_op_params(op_name: str, op_def: dict, default_window: int) -> dict[str, Any]:
+    """为算子构造合理的参数值。"""
+    params = op_def.get("params", [])
+    if not params:
+        return {}
+    result: dict[str, Any] = {}
+    for p in params:
+        if p == "window":
+            result[p] = default_window
+        elif p == "alpha":
+            result[p] = 0.2
+        elif p == "n":
+            result[p] = 5
+        elif p == "threshold":
+            result[p] = 0.0
+        elif p == "lower":
+            result[p] = -3.0
+        elif p == "upper":
+            result[p] = 3.0
+    return result
+
+
 OPERATOR_CATALOG: dict[str, dict[str, Any]] = {
+    # 截面算子
     "rank": {"arity": 1, "category": "cross_section", "description": "横截面排名百分位"},
     "zscore": {"arity": 1, "category": "cross_section", "description": "横截面标准化"},
+    "quantile": {"arity": 1, "category": "cross_section", "params": ["n"], "description": "截面分位数分组"},
+    "group_neutralize": {"arity": 1, "category": "cross_section", "description": "组内去均值中性化"},
+    "group_rank": {"arity": 1, "category": "cross_section", "description": "组内排名"},
+    "group_zscore": {"arity": 1, "category": "cross_section", "description": "组内 Z-Score"},
+    # 时序算子
     "delta": {"arity": 1, "category": "time_series", "params": ["window"], "description": "时间序列差分"},
     "lag": {"arity": 1, "category": "time_series", "params": ["window"], "description": "时间序列滞后"},
     "mean": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动均值"},
     "std": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动标准差"},
     "ts_rank": {"arity": 1, "category": "time_series", "params": ["window"], "description": "时间序列排名"},
+    "min": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最小值"},
+    "max": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最大值"},
+    "ts_sum": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动求和"},
+    "ts_argmax": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最大值位置"},
+    "ts_argmin": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最小值位置"},
+    "ema": {"arity": 1, "category": "time_series", "params": ["alpha"], "description": "指数移动平均"},
+    "rolling_ols_residual": {"arity": 1, "category": "time_series", "params": ["window"], "description": "OLS 去市场 Beta 残差"},
+    # 数学算子
+    "abs": {"arity": 1, "category": "math", "description": "绝对值"},
+    "sign": {"arity": 1, "category": "math", "description": "符号函数"},
+    "log": {"arity": 1, "category": "math", "description": "对数变换"},
+    "sigmoid": {"arity": 1, "category": "math", "description": "Sigmoid 激活"},
+    # 算术算子
     "add": {"arity": 2, "category": "arithmetic", "description": "加法"},
     "sub": {"arity": 2, "category": "arithmetic", "description": "减法"},
     "mul": {"arity": 2, "category": "arithmetic", "description": "乘法"},
     "div": {"arity": 2, "category": "arithmetic", "description": "除法"},
-    "min": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最小值"},
-    "max": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动最大值"},
+    # 后处理
     "clip": {"arity": 1, "category": "postprocess", "params": ["lower", "upper"], "description": "截断"},
+    "piecewise": {"arity": 1, "category": "postprocess", "params": ["threshold"], "description": "分段函数"},
 }
 
 
@@ -265,13 +306,14 @@ class FactorHypothesisGenerator:
                         continue
                     if template_index >= max_candidates:
                         break
+                    op_params = _build_op_params(op_name, op_def, w)
                     tree = FactorNode(
                         node_type="rank",
                         children=[
                             FactorNode(
                                 node_type=op_name,
                                 children=[FactorNode(node_type="feature", value=feat)],
-                                params={"window": w},
+                                params=op_params,
                             )
                         ],
                     )
@@ -366,6 +408,70 @@ class FactorHypothesisGenerator:
                         if candidate is not None:
                             candidates.append(candidate)
                             template_index += 1
+
+        # 策略4：截面算子组合（中性化、组内排名）
+        for feat in base_features[:2]:
+            for cs_op in ["group_neutralize", "group_rank", "group_zscore", "quantile"]:
+                if template_index >= max_candidates:
+                    break
+                op_def = OPERATOR_CATALOG.get(cs_op, {})
+                op_params = _build_op_params(cs_op, op_def, 5)
+                tree = FactorNode(
+                    node_type="rank",
+                    children=[
+                        FactorNode(
+                            node_type=cs_op,
+                            children=[FactorNode(
+                                node_type="delta",
+                                children=[FactorNode(node_type="feature", value=feat)],
+                                params={"window": 5},
+                            )],
+                            params=op_params,
+                        )
+                    ],
+                )
+                candidate = self._build_candidate_from_tree(
+                    tree=tree, family=family, direction=direction,
+                    features=[feat], window=5,
+                    template_name=f"{cs_op}_{feat}",
+                    memory_context=memory_context,
+                    library_context=library_context,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+                    template_index += 1
+
+        # 策略5：数学变换（绝对值、对数、Sigmoid）
+        for feat in base_features[:2]:
+            for math_op in ["abs", "log", "sigmoid", "sign"]:
+                if template_index >= max_candidates:
+                    break
+                op_def = OPERATOR_CATALOG.get(math_op, {})
+                op_params = _build_op_params(math_op, op_def, 5)
+                tree = FactorNode(
+                    node_type="rank",
+                    children=[
+                        FactorNode(
+                            node_type=math_op,
+                            children=[FactorNode(
+                                node_type="delta",
+                                children=[FactorNode(node_type="feature", value=feat)],
+                                params={"window": 5},
+                            )],
+                            params=op_params,
+                        )
+                    ],
+                )
+                candidate = self._build_candidate_from_tree(
+                    tree=tree, family=family, direction=direction,
+                    features=[feat], window=5,
+                    template_name=f"{math_op}_{feat}",
+                    memory_context=memory_context,
+                    library_context=library_context,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+                    template_index += 1
 
         return candidates
 

@@ -150,7 +150,10 @@ class RiskManager:
 
             if combined is not None:
                 aligned = market_df[[self.date_col, self.asset_col, "industry"]].copy()
-                aligned["factor"] = combined.values if hasattr(combined, 'values') else combined
+                aligned = aligned.merge(
+                    combined.reset_index().rename(columns={combined.name or 0: "factor"}),
+                    on=[self.date_col, self.asset_col], how="left"
+                )
                 industry_exposure = aligned.groupby("industry")["factor"].mean().abs()
                 max_exp = float(industry_exposure.max()) if not industry_exposure.empty else 0.0
                 if max_exp > self.limits.max_industry_exposure:

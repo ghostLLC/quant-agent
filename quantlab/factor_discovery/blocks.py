@@ -771,12 +771,19 @@ def filter_block(op: str, input_block: Block, cond_block: Block | None = None) -
 
 # FactorNode node_type → Block operator name mapping
 _FACTOR_NODE_OP_MAP: dict[str, str] = {
+    # Arithmetic (arity 2)
     "add": "add",
     "sub": "sub",
     "mul": "mul",
     "div": "div",
+    # Cross-section (arity 1)
     "rank": "rank",
     "zscore": "zscore",
+    "quantile": "quantile",
+    "group_neutralize": "group_neutralize",
+    "group_rank": "group_rank",
+    "group_zscore": "group_zscore",
+    # Time-series (arity 1)
     "delta": "delta",
     "lag": "lag",
     "mean": "ts_mean",
@@ -784,16 +791,32 @@ _FACTOR_NODE_OP_MAP: dict[str, str] = {
     "ts_rank": "ts_rank",
     "min": "ts_min",
     "max": "ts_max",
+    "ts_sum": "ts_sum",
+    "ts_argmax": "ts_argmax",
+    "ts_argmin": "ts_argmin",
+    "ema": "ema",
+    "rolling_ols_residual": "rolling_ols_residual",
+    # Post-process (arity 1)
+    "abs": "abs",
+    "sign": "sign",
+    "log": "log",
+    "sigmoid": "sigmoid",
     "clip": "clip",
+    "piecewise": "piecewise",
+    # Constant (arity 0)
     "constant": "constant",
 }
 
-# Arity: 1 = TransformBlock, 2 = CombineBlock
+# Arity: 1 = TransformBlock, 2 = CombineBlock, 0 = constant
 _FACTOR_NODE_ARITY: dict[str, int] = {
     "add": 2, "sub": 2, "mul": 2, "div": 2,
-    "rank": 1, "zscore": 1, "delta": 1, "lag": 1,
-    "mean": 1, "std": 1, "ts_rank": 1,
-    "min": 1, "max": 1, "clip": 1, "constant": 0,
+    "rank": 1, "zscore": 1, "quantile": 1,
+    "group_neutralize": 1, "group_rank": 1, "group_zscore": 1,
+    "delta": 1, "lag": 1, "mean": 1, "std": 1, "ts_rank": 1,
+    "min": 1, "max": 1, "ts_sum": 1,
+    "ts_argmax": 1, "ts_argmin": 1, "ema": 1, "rolling_ols_residual": 1,
+    "abs": 1, "sign": 1, "log": 1, "sigmoid": 1, "clip": 1, "piecewise": 1,
+    "constant": 0,
 }
 
 

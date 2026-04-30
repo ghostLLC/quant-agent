@@ -181,7 +181,7 @@ def bootstrap_seed_factors(
     """
     import pandas as pd
     from .blocks import BlockExecutor
-    from .models import FactorDirection, FactorSpec, FactorStatus
+    from .models import FactorDirection, FactorEvaluationReport, FactorScorecard, FactorSpec, FactorStatus
     from .runtime import FactorLibraryEntry, PersistentFactorStore
 
     if store is None:
@@ -207,7 +207,7 @@ def bootstrap_seed_factors(
 
     for seed in new_seeds:
         try:
-            root = executor._deserialize_block(seed.block_tree)
+            root = Block.from_dict(seed.block_tree)
             factor_values = executor.execute(root, market_df) if market_df is not None else None
 
             spec = FactorSpec(
@@ -224,7 +224,15 @@ def bootstrap_seed_factors(
                 created_from="seed",
             )
 
-            entry = FactorLibraryEntry(factor_spec=spec)
+            entry = FactorLibraryEntry(
+                factor_spec=spec,
+                latest_report=FactorEvaluationReport(
+                    report_id=f"seeded_{seed.factor_id}",
+                    factor_spec=spec,
+                    scorecard=FactorScorecard(),
+                ),
+                retention_reason=seed.mechanism,
+            )
             store.upsert_library_entry(entry, factor_panel=factor_values)
 
             if market_df is not None and factor_values is not None:
@@ -271,37 +279,5 @@ def bootstrap_seed_factors(
 
 def _compute_seed_ic(factor_values: "pd.Series", market_df: "pd.DataFrame") -> dict[str, float]:
     """计算种子因子的 Rank IC。"""
-    import numpy as np
-    import pandas as pd
-
-    try:
-        if "close" not in market_df.columns:
-            return {"rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-        aligned = market_df.copy()
-        aligned["factor"] = factor_values
-
-        asset_col = "asset" if "asset" in aligned.columns else "ts_code"
-        aligned = aligned.sort_values([asset_col, "date"])
-        aligned["fwd_ret_5"] = aligned.groupby(asset_col)["close"].shift(-5) / aligned["close"] - 1
-
-        rank_ics = []
-        for _, group in aligned.groupby("date"):
-            valid = group[["factor", "fwd_ret_5"]].dropna()
-            if len(valid) >= 20:
-                ric = valid["factor"].rank().corr(valid["fwd_ret_5"].rank(), method="pearson")
-                if not np.isnan(ric):
-                    rank_ics.append(ric)
-
-        if not rank_ics:
-            return {"rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
-
-        ic_mean = float(np.mean(rank_ics))
-        ic_std = float(np.std(rank_ics))
-        return {
-            "rank_ic_mean": round(ic_mean, 4),
-            "ic_ir": round(ic_mean / ic_std, 4) if ic_std > 0 else 0.0,
-            "coverage": round(float(factor_values.notna().mean()), 4),
-        }
-    except Exception:
-        return {"rank_ic_mean": 0.0, "ic_ir": 0.0, "coverage": 0.0}
+    from quantlab.metrics import compute_rank_ic
+    return compute_rank_ic(factor_values, market_df)
