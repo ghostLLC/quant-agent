@@ -1,172 +1,147 @@
 # CLAUDE.md
 
-Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+Behavioral guidelines to reduce common LLM coding mistakes. For trivial tasks, use judgment.
 
 ## 1. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
 
 Before implementing:
-
 - State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
+- If multiple interpretations exist, present them — don't pick silently.
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
 ## 2. Simplicity First
 
 **Minimum code that solves the problem. Nothing speculative.**
-
 - No features beyond what was asked.
 - No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
 ## 3. Surgical Changes
 
 **Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-
 - Don't "improve" adjacent code, comments, or formatting.
 - Don't refactor things that aren't broken.
 - Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
 
 ## 4. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
 - "Add validation" → "Write tests for invalid inputs, then make them pass"
 - "Fix the bug" → "Write a test that reproduces it, then make it pass"
 - "Refactor X" → "Ensure tests pass before and after"
 
-For multi-step tasks, state a brief plan:
-
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
-
 ---
-
-**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
-
----
-
-Following file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Common Commands
 
 ```bash
-# Run the daily factor factory pipeline (5 stages: refresh → decay monitor → evolution → screening → report)
+# Activate project venv (Python 3.13, project-isolated)
+source .venv/Scripts/activate
+
+# Run the daily factor factory pipeline (8 stages, LLM-first)
 python -m quantlab.scheduler run_daily
 
-# Run a specific module
-python -m quantlab.scheduler status           # View recent execution records
-python -m quantlab.scheduler install_cron     # Install Windows scheduled task (daily 18:30)
+# View recent execution records
+python -m quantlab.scheduler status
 
-# Refresh data
-python refresh_data.py                        # Cross-section data refresh
-python fetch_hs300_etf.py                     # ETF data fetch
+# Install Windows scheduled task (daily 18:30)
+python -m quantlab.scheduler install_cron
+
+# Pull real zz800 cross-section data
+python pull_zz800_cross_section.py --start 20240101 --assets 150
+
+# Refresh data (cross-section + ETF)
+python refresh_data.py
+python fetch_hs300_etf.py
 
 # Run backtest
 python run_backtest.py --data data/hs300_etf.csv --strategy ma_cross
 
-# Run test suite (32 tests, pytest)
-python -m pytest tests/ -v
+# Run test suite (118 tests)
+D:\quant-agent\.venv\Scripts\python.exe -m pytest tests/ -v
 
-# Verification scripts (smoke tests for data + multi-agent pipeline)
-python verify_multi_agent.py                  # Multi-agent framework end-to-end
-python verify_zz800.py                        # zz800 data + Block system + IC check
+# Run a single test file
+D:\quant-agent\.venv\Scripts\python.exe -m pytest tests/test_blocks.py -v
+
+# Lint
+D:\quant-agent\.venv\Scripts\python.exe -m ruff check quantlab/
 ```
 
 ## Environment
 
-- `.env` at project root provides `TUSHARE_TOKEN` (Tushare Pro data) and optional LLM keys (`ASSISTANT_BASE_URL`, `ASSISTANT_API_KEY`, `ASSISTANT_MODEL`)
+- `.env` at project root provides `TUSHARE_TOKEN` and LLM keys (`ASSISTANT_API_KEY`, `ASSISTANT_BASE_URL`, `ASSISTANT_MODEL`)
 - Token priority: `.env` → system env var → code argument
-- Python 3.10+, dependencies: `pandas>=2.2.0`, `numpy>=1.26.0`, `akshare>=1.18.55` (`tushare` is optional)
+- Python 3.10+, dependencies: `pandas>=2.2.0`, `numpy>=1.26.0`, `akshare>=1.18.55`
+- Project venv: `D:\quant-agent\.venv`
 
-## Architecture Overview
+## Architecture
 
-This is a **quant factor factory** targeting A-share cross-sectional alpha factor discovery, modeled on the WorldQuant sell-factor business. The system does NOT trade — it discovers, validates, and produces deliverable factor reports.
+This is an **AI-native quant factor factory** for A-share cross-sectional alpha factor discovery, modeled on WorldQuant's sell-factor business. It discovers, validates, and produces deliverable factor reports — it does NOT trade.
 
-### Core Pipeline (7 stages)
+### Pipeline (8 stages)
 
 ```
-Hypothesis Generation → Safe Execution → Cross-sectional Evaluation
-    → Evolution Search → Decay Monitoring → Delivery Screening → Report Output
+Data Refresh → Decay Monitor → Evolution Search (LLM-first) → OOS Validation
+    → Factor Combination + Benchmark → Delivery Screening → Governance
+    → Paper Trading → Report Output
 ```
 
-### Key architectural layers
+### Top-level organization
 
-**Factor Discovery Core** (`quantlab/factor_discovery/`) — The heart of the system:
+**`quantlab/pipeline_stages/`** — Composable `PipelineStage` classes, one per pipeline phase. Each stage takes a `PipelineContext` and returns `dict[str, Any]`. Stages are independently testable. `DailyScheduler` (~250 lines in `scheduler.py`) orchestrates them.
 
-- **`pipeline.py`** — `FactorDiscoveryOrchestrator`: the single-factor closed loop. Builds a 6-stage research plan (spec review → sandbox guard → compute → evaluate → validate → screen), evaluates with 11-dimension scoring (IC, ICIR, monotonicity, turnover, coverage, decay, exposure, stability, tradability, novelty, complexity), and decides approved/observe/rejected.
-- **`evolution.py`** — `FactorEvolutionLoop`: multi-round evolution search. Round 0 generates fresh hypotheses; subsequent rounds apply mutation/crossover to top-performing factors from the library (QuantaAlpha trajectory-level evolution). Early-stop when no improvement for N consecutive rounds.
-- **`blocks.py`** — Block system v2: a complete serializable factor DSL. 5 block types (Data, Transform, Combine, Relational, Filter) with 100+ registered operators. `BlockExecutor` recursively evaluates block trees against market DataFrames. This replaces raw Python expression evaluation with structured, auditable computation.
-- **`runtime.py`** — `SafeFactorExecutor` (AST whitelist enforcement, 18 operators, depth/window limits) + `PersistentFactorStore` (JSON file-based factor library) + `FactorExperienceMemory` (experience pattern tracking).
-- **`hypothesis.py`** — `FactorHypothesisGenerator`: template-based candidate generation using 3 strategies (single-operator, cross-feature, volatility-adjusted) with family-aware diversity penalties.
-- **`multi_agent.py`** — `FactorMultiAgentOrchestrator`: 3-team, 6-agent collaboration (R1 generation + R2 review → P1 architect + P2 block assembly + P3 custom code → T1 backtest + T2 validation) with a `MessageBus` and `LLMClient` for LLM-driven deep reasoning.
-- **`factor_enhancements.py`** — 6 enhancement modules: ExperienceLoop, RiskNeutralizer, FactorCombiner, ParameterSearcher, CustomCodeGenerator (LLM code gen + sandbox), OrthogonalityGuide.
+**`quantlab/factor_discovery/`** — Factor discovery core:
 
-**Delivery & Monitoring** (`decay_monitor.py`, `delivery_screener.py`, `factor_report.py`):
-- Decay monitor checks 4 criteria (IC decay >50%, |IC| <0.015, ICIR <0.15, IC positive ratio <50%) and triggers re-discovery.
-- Delivery screener enforces 8 WorldQuant standards before a factor is considered sellable.
-- Report generator produces JSON + Markdown with full buy-side due diligence coverage.
+- **`multi_agent.py`** — `FactorMultiAgentOrchestrator`: 3-team 6-agent LLM collaboration (R1 generation + R2 review → P1 architect + P2 block assembly + P3 custom code → T1 backtest + T2 validation). LLM is the DEFAULT path; template evolution is the fallback. R1 prompt includes:
+  - Experience context (from `ExperienceLoop`)
+  - Orthogonality constraints (from `OrthogonalityGuide`)
+  - Research knowledge (from `FactorKnowledgeBase`, 12 academic directions)
+  - Cross-run context memory (from `LLMClient.get_context_summary()`)
+- **`blocks.py`** — Block system v2: serializable factor DSL. 5 block types (Data, Transform, Combine, Relational, Filter) with 100+ registered operators. 28 operators round-trip through `FactorNode → Block` conversion via `_FACTOR_NODE_OP_MAP`. `Block.from_dict(d)` is the canonical deserialization.
+- **`hypothesis.py`** — 5-strategy template hypothesis generation covering 30 DSL operators. Template is the fallback when LLM is unavailable. `_build_op_params()` handles dynamic parameter construction.
+- **`evolution.py`** — `FactorEvolutionLoop`: multi-round evolution search with mutation/crossover.
+- **`factor_enhancements.py`** — 9 enhancement modules: ExperienceLoop, RiskNeutralizer, FactorCombiner, ParameterSearcher, CustomCodeGenerator (AST-level sandbox + substring blacklist dual defense), OrthogonalityGuide, CrowdingDetector, RegimeDetector, FactorCurveAnalyzer.
+- **`pipeline.py`** — `FactorDiscoveryOrchestrator`: single-factor closed loop with 11-dimension scoring.
+- **`runtime.py`** — `SafeFactorExecutor` (FactorNode → Block conversion + execution) + `PersistentFactorStore` (JSON file-based factor library).
+- **`models.py`** — `FactorSpec` (universal currency), `FactorLibraryEntry`, `FactorStatus` (7-state lifecycle: DRAFT → CANDIDATE → OBSERVE → PAPER → PILOT → LIVE → RETIRED), `FactorScorecard`.
+- **`datahub.py`** — `DataHub` with `LocalCSVProvider`, `TushareProProvider`, `AkShareIncrementalProvider`.
+- **`seed_factors.py`** — 7 academic seed factors. `bootstrap_seed_factors()` skips factors whose required data fields are missing from the market DataFrame.
 
-**Trading Engine** (`quantlab/trading/`):
-- A-share cost model: commission 0.03% (min ¥5), stamp tax 0.1% (sell only), slippage 0.02%, impact cost based on participation rate.
-- Portfolio constructor supports 4 weight schemes (equal, score, IC-weighted, sector-neutral).
-- Simulator tracks daily turnover, cost, net/gross returns, drawdown, Sharpe, IR.
+**`quantlab/metrics/`** — Shared computation:
+- `compute_rank_ic(factor_values, market_df) → dict` — Unified Rank IC, used by all 7+ pipeline paths. Handles both flat Series and MultiIndex (date, asset) factor values.
 
-**Data Layer** (`quantlab/data/`, `quantlab/factor_discovery/datahub.py`):
-- `DataHub` provides unified access with provider abstraction: `LocalCSVProvider`, `TushareProProvider` (batch daily API, 5000+ rows in <1s), `AkShareIncrementalProvider` (incremental refresh).
-- Default data path is `zz800_cross_section.csv` (see `config.py` `DEFAULT_DATA_PATH`).
+**`quantlab/knowledge/`** — External research knowledge:
+- `FactorKnowledgeBase.get_knowledge_context(direction) → str` — Returns markdown-formatted academic factor research knowledge for LLM prompt injection.
 
-**Agent Runtime** (`quantlab/assistant/tools.py`):
-- `AssistantToolRuntime` registers 21 tools covering the full factor lifecycle.
-- `ResearchTaskExecutor` (`quantlab/research/executor.py`) routes 14 task types: single backtest, grid search, train-test validation, walk-forward, multi-strategy compare, portfolio review, factor discovery, hypothesis generation, factor evolution, multi-agent discovery, data refresh, experiment history/detail.
+**`quantlab/trading/`** — Trading engine: cost model, portfolio construction, simulator, risk control, broker interface.
 
-**Scheduler** (`quantlab/scheduler.py`):
-- `DailyScheduler` runs the 5-stage pipeline: incremental refresh → decay monitor → evolution search (per direction) → delivery screening → report generation.
-- Supports Windows Task Scheduler integration via `schtasks`.
+### Critical Design Patterns
 
-### Important Design Patterns
+1. **FactorSpec is the universal currency** — Everything flows through `FactorSpec`. Serializes to/from JSON for persistence and agent communication.
 
-1. **FactorSpec is the universal currency** — Everything flows through `FactorSpec` (factor_id, expression_tree, dependencies, preprocess config, label spec, universe spec, execution policy). It serializes to/from JSON for persistence and agent communication.
+2. **Block.from_dict() for deserialization** — Not `executor._deserialize_block()` (removed). Always use `Block.from_dict(block_tree_dict)`.
 
-2. **Cross-section only, no proxy** — The system explicitly rejects single-asset proxy data for factor discovery. `_load_factor_market_frame` in `executor.py` checks for `{date, close, volume}` + (`asset` or `ts_code`) columns and raises if not genuine cross-section data (`allow_proxy=False`).
+3. **`ts_code` → `asset` normalization at data boundary** — `load_cross_section_data()` normalizes `ts_code` (e.g. `000001.SZ`) to `asset` (e.g. `000001`). Downstream code always uses `asset`.
 
-3. **Unified expression system via FactorNode → Block conversion** — `SafeFactorExecutor.execute()` converts `FactorNode` trees to `Block` trees via `factor_node_to_block()`, then executes through `BlockExecutor`. This unifies the two expression systems: the older `FactorNode` (used by hypothesis/evolution/pipeline) and the richer `Block` system (100+ operators). Conversion is bidirectional (`block_to_factor_node()` also available). Both are JSON-serializable.
+4. **LLM-first, template fallback** — Evolution stage tries LLM multi-agent per direction. If LLM is unavailable or fails, falls back to `FactorEvolutionLoop` (template). No experience gate.
 
-4. **Persistent JSON storage** — Factor library, experience registry, run records, and scheduler logs all use JSON files under `assistant_data/` and `data/scheduler/`. No database dependency.
+5. **MultiIndex factor values** — `BlockExecutor.execute()` returns `pd.Series` with `MultiIndex(date, asset)`. `compute_rank_ic()` handles this via `_align_factor()`.
 
-5. **Template → LLM fallback** — Most generators try LLM first (when configured) and fall back to template-based generation when LLM is unavailable or fails.
+6. **JSON persistence, no database** — Factor library, experience registry, run records use JSON files under `assistant_data/` and `data/scheduler/`.
 
-6. **`ts_code` → `asset` normalization at data boundary** — `load_cross_section_data()` and all `DataProvider.load_cross_section()` implementations normalize `ts_code` (e.g. `000001.SZ`) to `asset` (e.g. `000001`) at load time. Downstream code should always use `asset`.
+7. **Canonical import path** — `quantlab/factor_discovery/__init__.py` re-exports all public classes.
 
-### File Organization Notes
+### Important Implementation Details
 
-- `quantlab/factor_discovery/__init__.py` re-exports all public classes — it's the canonical import path.
-- `quantlab/config.py` defines `BacktestConfig` (dataclass with 20+ fields) and global path constants.
-- `quantlab/pipeline.py` is the main research pipeline entry, wrapping all backtest/validation/refresh functions.
-- `run_backtest.py`, `refresh_data.py`, `fetch_hs300_etf.py` are top-level entry scripts.
-- Uncommitted scripts (`*.py` in .gitignore as `test_*.py`) are verification tools, not formal tests.
+- **CustomCodeGenerator sandbox**: `_safety_check()` uses AST validation first (`_ast_validate()`), substring blacklist second. `_sandbox_execute()` runs with restricted `__builtins__` (must include `__import__` for pandas/numpy imports). `SAFE_BUILTINS` controls the whitelist. Code must define `def compute_factor(df):`.
+- **Seed factor bootstrap**: `bootstrap_seed_factors()` requires `FactorLibraryEntry` with `latest_report` (minimal `FactorEvaluationReport` with empty `FactorScorecard`) and `retention_reason`. It calls `store.upsert_library_entry(entry, factor_panel=...)` to persist.
+- **PipelineContext._meta**: Used to pass deliverable factor IDs between stages (e.g., `ctx._meta = {"deliverable_factor_ids": ids}`).
+- **Config path**: `DEFAULT_CROSS_SECTION_DATA_PATH` in `config.py` points to `data/zz800_cross_section.csv`.
