@@ -148,6 +148,9 @@ class AgentDeliveryReportStage(PipelineStage):
         # 构建因子库背景（供 Agent 分析 peer comparison 使用）
         library_context = self._build_library_context(library, deliverable_ids)
 
+        # 获取异常检测结果（来自 DataRefreshStage）
+        anomalies = ctx._meta.get("anomalies")
+
         for entry in library:
             if entry.factor_spec.factor_id not in deliverable_ids:
                 continue
@@ -165,6 +168,14 @@ class AgentDeliveryReportStage(PipelineStage):
                     output_dir=output_dir,
                 )
                 report_dict = numerical_report.to_dict()
+
+                # ---- 真实收益验证 ----
+                real_return_validation = self._run_real_return_validation(
+                    factor_id=entry.factor_spec.factor_id,
+                    factor_panel=factor_panel,
+                    market_df=hub,
+                    report_dict=report_dict,
+                )
 
                 # ---- Agent 叙事报告 ----
                 narrative = {}
@@ -188,12 +199,24 @@ class AgentDeliveryReportStage(PipelineStage):
                         )
                         narrative = {"status": "failed", "error": str(exc)[:200]}
 
+                # ---- 基准因子对比 ----
+                benchmark_comparison = self._run_benchmark_comparison(
+                    factor_id=entry.factor_spec.factor_id,
+                    factor_panel=factor_panel,
+                    market_df=hub,
+                )
+
                 # ---- 合并并保存增强报告 ----
                 enhanced = {
                     "numerical": report_dict,
                     "narrative": narrative,
+                    "real_return_validation": real_return_validation,
+                    "benchmark_comparison": benchmark_comparison,
                     "generated_at": datetime.now().isoformat(),
                 }
+                # 注入异常检测摘要
+                if anomalies:
+                    enhanced["anomaly_summary"] = anomalies
                 self._save_enhanced_report(enhanced, output_dir, entry.factor_spec.factor_id)
 
                 reports.append(output_dir)
@@ -204,6 +227,162 @@ class AgentDeliveryReportStage(PipelineStage):
                 )
 
         return reports
+
+    def _run_real_return_validation(
+        self,
+        factor_id: str,
+        factor_panel: "pd.Series",
+        market_df: "pd.DataFrame",
+        report_dict: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run RealReturnEvaluator and compare to IC predictions."""
+        try:
+            from quantlab.factor_discovery.real_return import (
+                RealReturnEvaluator,
+                compare_to_ic,
+            )
+
+            # Convert factor_panel to DataFrame format for RealReturnEvaluator
+            import pandas as pd
+            if isinstance(factor_panel, pd.Series):
+                fp = factor_panel.reset_index()
+                if fp.shape[1] >= 3:
+                    fp.columns = ["date", "asset", "factor_value"]
+                elif fp.shape[1] == 2:
+                    fp.columns = ["asset", "factor_value"]
+                fp["date"] = pd.to_datetime(fp["date"])
+            elif isinstance(factor_panel, pd.DataFrame):
+                fp = factor_panel.copy()
+                if "factor_value" not in fp.columns and fp.shape[1] >= 3:
+                    val_cols = [c for c in fp.columns if c not in ("date", "asset")]
+                    if val_cols:
+                        fp = fp.rename(columns={val_cols[0]: "factor_value"})
+            else:
+                return {"status": "skipped", "reason": "因子面板格式错误"}
+
+            evaluator = RealReturnEvaluator()
+            rr_report = evaluator.evaluate(
+                factor_panel=fp,
+                market_df=market_df,
+                n_long=50,
+                initial_capital=1e8,
+            )
+            rr_report.factor_id = factor_id
+
+            # Get IC stats from numerical report
+            perf = report_dict.get("performance", {})
+            ic_stats = {
+                "rank_ic_mean": perf.get("rank_ic_mean", perf.get("ic_mean", 0.0)),
+                "coverage": perf.get("coverage", 1.0),
+            }
+
+            comparison = compare_to_ic(rr_report, ic_stats)
+
+            logger.info(
+                "真实收益验证完成: factor_id=%s net_sharpe=%.3f gross_sharpe=%.3f verdict=%s",
+                factor_id, rr_report.net_sharpe, rr_report.gross_sharpe,
+                comparison.get("verdict", ""),
+            )
+
+            return {
+                "status": "success",
+                "report": rr_report.to_dict(),
+                "ic_comparison": comparison,
+            }
+        except Exception as exc:
+            logger.warning("真实收益验证失败 factor_id=%s: %s", factor_id, exc)
+            return {"status": "failed", "error": str(exc)[:200]}
+
+    def _build_real_return_block(self, validation: dict[str, Any]) -> list[str]:
+        """Build markdown block for Real Return Validation section."""
+        if validation.get("status") != "success":
+            return []
+
+        report = validation.get("report", {})
+        comparison = validation.get("ic_comparison", {})
+
+        block = ["## 真实收益验证 (Real Return Validation)", ""]
+
+        # Core metrics
+        block.append("### 组合回测绩效")
+        block.append("")
+        block.append(f"- **净夏普**: {report.get('net_sharpe', 0):.3f}")
+        block.append(f"- **毛夏普**: {report.get('gross_sharpe', 0):.3f}")
+        block.append(f"- **年化净收益**: {report.get('net_return_annual', 0):.2%}")
+        block.append(f"- **年化毛收益**: {report.get('gross_return_annual', 0):.2%}")
+        block.append(f"- **最大回撤**: {report.get('max_drawdown', 0):.2%}")
+        block.append(f"- **年化波动**: {report.get('net_volatility_annual', 0):.2%}")
+        block.append("")
+
+        # Cost analysis
+        block.append("### 交易成本分析")
+        block.append("")
+        block.append(f"- **成本侵蚀**: {report.get('cost_drag_pct', 0) * 100:.2f}%/年")
+        block.append(f"- **平均换手率**: {report.get('avg_turnover', 0):.2%}")
+        block.append(f"- **换手衰减比** (net/gross IC): {report.get('turnover_decay_ratio', 0):.3f}")
+        block.append("")
+
+        # IC comparison
+        if comparison:
+            block.append("### IC 与真实收益对比")
+            block.append("")
+            block.append(f"- **IC 预测夏普**: {comparison.get('ic_predicted_sharpe', 0):.3f}")
+            block.append(f"- **实际夏普**: {comparison.get('actual_sharpe', 0):.3f}")
+            block.append(f"- **相关偏差**: {comparison.get('correlation_bias', 0):.3f}")
+            block.append(f"- **IC 效率**: {comparison.get('ic_inefficiency', 0):.1%} 的信号在交易中损失")
+            block.append(f"- **判定**: {comparison.get('verdict', '')}")
+            block.append("")
+
+        # Capacity
+        cap = report.get("capacity_estimate", {})
+        if cap:
+            block.append("### 容量估算")
+            block.append("")
+            block.append(f"- 日均容量: {cap.get('total_daily_capacity_yuan', 0):.0f} 元")
+            block.append(f"- 月均容量: {cap.get('total_monthly_capacity_yuan', 0):.0f} 元")
+            block.append(f"- 最大参与率: {cap.get('max_participation_rate', 0):.0%}")
+            block.append(f"- 持仓数: {cap.get('max_stocks', 0)}")
+            block.append("")
+
+        # Attribution
+        attr = report.get("attribution", {})
+        if attr:
+            block.append("### 收益归因")
+            block.append("")
+            block.append(f"- Alpha: {attr.get('alpha', 0):.4f}")
+            block.append(f"- 市场 Beta: {attr.get('market_beta', 0):.3f}")
+            block.append(f"- 残差占比: {attr.get('residual', 0):.1%}")
+            block.append("")
+
+        return block
+
+    def _run_benchmark_comparison(
+        self,
+        factor_id: str,
+        factor_panel: "pd.DataFrame",
+        market_df: "pd.DataFrame",
+    ) -> dict[str, Any]:
+        """Compare a factor against the known benchmark factor registry."""
+        try:
+            from quantlab.factor_discovery.benchmark_factors import BenchmarkFactorRegistry
+            registry = BenchmarkFactorRegistry()
+            result = registry.compare_to_benchmarks(
+                {factor_id: factor_panel}, market_df
+            )
+            correlations = result.get("correlations", {}).get(factor_id, {})
+            top_matches = sorted(correlations.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
+            return {
+                "status": "success",
+                "benchmark_count": result.get("benchmark_count", 0),
+                "top_correlations": [
+                    {"benchmark": name, "correlation": round(corr, 4)}
+                    for name, corr in top_matches
+                ],
+                "max_abs_correlation": round(result.get("max_abs_correlation", 0), 4),
+            }
+        except Exception as e:
+            logger.debug("基准对比失败 factor_id=%s: %s", factor_id, e)
+            return {"status": "skipped", "reason": str(e)[:100]}
 
     def _build_library_context(
         self, library: list, deliverable_ids: list[str]
@@ -242,11 +421,26 @@ class AgentDeliveryReportStage(PipelineStage):
 
         # Markdown（如果叙事存在则增强）
         md_path = out / f"factor_delivery_{factor_id}.md"
-        if md_path.exists() and enhanced.get("narrative", {}).get("executive_summary"):
-            narrative = enhanced["narrative"]
+        if md_path.exists():
             existing = md_path.read_text(encoding="utf-8")
-            enhanced_md = self._inject_narrative_into_markdown(existing, narrative)
-            md_path.write_text(enhanced_md, encoding="utf-8")
+            modified = False
+            # 注入 Agent 叙事
+            if enhanced.get("narrative", {}).get("executive_summary"):
+                existing = self._inject_narrative_into_markdown(existing, enhanced["narrative"])
+                modified = True
+            # 注入异常检测摘要
+            if enhanced.get("anomaly_summary"):
+                existing = self._inject_anomaly_into_markdown(existing, enhanced["anomaly_summary"])
+                modified = True
+            # 注入真实收益验证
+            rr_validation = enhanced.get("real_return_validation", {})
+            if rr_validation.get("status") == "success":
+                rr_block = self._build_real_return_block(rr_validation)
+                if rr_block:
+                    existing = existing.rstrip("\n") + "\n\n" + "\n".join(rr_block) + "\n"
+                    modified = True
+            if modified:
+                md_path.write_text(existing, encoding="utf-8")
 
     def _inject_narrative_into_markdown(
         self, original_md: str, narrative: dict[str, Any]
@@ -351,3 +545,44 @@ class AgentDeliveryReportStage(PipelineStage):
         if insert_idx > 0:
             return "\n".join(lines[:insert_idx]) + "\n" + narrative_text + "\n" + "\n".join(lines[insert_idx:])
         return original_md + "\n" + narrative_text
+
+    @staticmethod
+    def _inject_anomaly_into_markdown(
+        original_md: str, anomalies: dict[str, Any]
+    ) -> str:
+        """将异常检测摘要注入 Markdown 报告。"""
+        summary = anomalies.get("summary", {})
+        if not summary or summary.get("total_anomalies", 0) == 0:
+            return original_md  # 无异常，不修改
+
+        lines_block = ["## 数据异常检测 (AnomalyGuard)", ""]
+        lines_block.append(f"- **总异常数**: {summary.get('total_anomalies', 0)}")
+        lines_block.append(f"- 收盘价缺失: {summary.get('nan_in_close', 0) > 0}")
+        lines_block.append(f"- 零成交量资产数: {summary.get('zero_volume_assets', 0)}")
+        lines_block.append(f"- 价格跳变资产数: {summary.get('price_gap_assets', 0)}")
+        lines_block.append(f"- 重复行数: {summary.get('duplicate_rows', 0)}")
+        lines_block.append(f"- 未来日期行数: {summary.get('future_dates', 0)}")
+        lines_block.append(f"- 疑似拆股事件: {summary.get('suspected_splits', 0)}")
+        lines_block.append(f"- 疑似分红事件: {summary.get('suspected_dividends', 0)}")
+        lines_block.append(f"- 停牌资产数: {summary.get('suspended_assets', 0)}")
+
+        # 列出停牌资产
+        suspended = anomalies.get("suspensions", [])
+        if suspended:
+            lines_block.append(f"- 停牌资产列表: {', '.join(suspended[:20])}")
+            if len(suspended) > 20:
+                lines_block.append(f"  (... 及其他 {len(suspended) - 20} 个资产)")
+
+        lines_block.append("")
+
+        anomaly_text = "\n".join(lines_block)
+        lines = original_md.split("\n")
+        insert_idx = 0
+        for i, line in enumerate(lines):
+            if line.startswith("## "):
+                insert_idx = i
+                break
+
+        if insert_idx > 0:
+            return "\n".join(lines[:insert_idx]) + "\n" + anomaly_text + "\n" + "\n".join(lines[insert_idx:])
+        return original_md + "\n" + anomaly_text

@@ -1,3 +1,32 @@
+from .benchmark_factors import BENCHMARK_REGISTRY, BenchmarkFactorRegistry
+from .blocks import (
+    Block,
+    BlockExecutor,
+    CombineBlock,
+    CustomRequest,
+    DataBlock,
+    FactorHypothesis,
+    FilterBlock,
+    OperatorRegistry,
+    ProgrammingPlan,
+    RelationalBlock,
+    TransformBlock,
+    block_to_factor_node,
+    combine,
+    data,
+    factor_node_to_block,
+    filter_block,
+    relational,
+    transform,
+)
+from .datahub import DataHub, DataProvider, DataQualityReport, LocalCSVProvider
+from .decay_monitor import DecayCheckResult, DecayMonitorSummary, FactorDecayMonitor
+from .delivery_screener import DeliveryScreener, ScreeningResult, ScreeningSummary
+from .evolution import EvolutionConfig, FactorEvolutionLoop, Trajectory, TrajectoryStep
+from .factor_namer import FactorNamer, FactorVersionManager
+from .factor_report import FactorDeliveryReport, FactorDeliveryReportGenerator
+from .hypothesis import FactorHypothesisGenerator, HypothesisCandidate, HypothesisRequest
+from .llm_supervisor import LLMSupervisor
 from .models import (
     AgentRole,
     ConstraintScorecard,
@@ -23,35 +52,24 @@ from .models import (
     SandboxPolicy,
     SandboxValidationResult,
 )
-from .pipeline import FactorDiscoveryOrchestrator, build_default_factor_pipeline, evaluate_factor_metrics
-from .runtime import FactorExperienceMemory, PersistentFactorStore, SafeFactorExecutor
-from .hypothesis import FactorHypothesisGenerator, HypothesisCandidate, HypothesisRequest
-from .evolution import FactorEvolutionLoop, EvolutionConfig, Trajectory, TrajectoryStep
-from .datahub import DataHub, DataQualityReport, DataProvider, LocalCSVProvider
-from .factor_report import FactorDeliveryReport, FactorDeliveryReportGenerator
-from .decay_monitor import FactorDecayMonitor, DecayCheckResult, DecayMonitorSummary
-from .delivery_screener import DeliveryScreener, ScreeningResult, ScreeningSummary
-from .blocks import (
-    Block, DataBlock, TransformBlock, CombineBlock, RelationalBlock, FilterBlock,
-    BlockExecutor, OperatorRegistry, FactorHypothesis, ProgrammingPlan, CustomRequest,
-    data, transform, combine, relational, filter_block,
-    factor_node_to_block, block_to_factor_node,
-)
-from .sample_split import SampleSplitter, SplitResult
 from .multi_agent import (
+    BaseAgent,
     FactorMultiAgentOrchestrator,
-    MultiAgentConfig,
     LLMClient,
     MessageBus,
-    BaseAgent,
-    R1HypothesisGenerator,
-    R2HypothesisReviewer,
+    MultiAgentConfig,
     P1Architect,
     P2BlockAssembler,
     P3CustomCoder,
+    R1HypothesisGenerator,
+    R2HypothesisReviewer,
     T1Backtester,
     T2Validator,
 )
+from .pipeline import FactorDiscoveryOrchestrator, build_default_factor_pipeline, evaluate_factor_metrics
+from .real_return import RealReturnEvaluator, RealReturnReport, compare_to_ic
+from .runtime import FactorExperienceMemory, PersistentFactorStore, SafeFactorExecutor
+from .sample_split import SampleSplitter, SplitResult
 
 __all__ = [
     "AgentRole",
@@ -141,4 +159,16 @@ __all__ = [
     "P3CustomCoder",
     "T1Backtester",
     "T2Validator",
+    # LLM Supervisor
+    "LLMSupervisor",
+    # 真实收益评估
+    "RealReturnEvaluator",
+    "RealReturnReport",
+    "compare_to_ic",
+    # 基准因子注册表
+    "BenchmarkFactorRegistry",
+    "BENCHMARK_REGISTRY",
+    # 因子命名与版本管理
+    "FactorNamer",
+    "FactorVersionManager",
 ]

@@ -5,6 +5,7 @@
 
 使用方式：
     python -m quantlab.scheduler run_daily
+    python -m quantlab.scheduler run_daily --resume   # 断点续跑
     python -m quantlab.scheduler install_cron
     python -m quantlab.scheduler status
 """
@@ -40,6 +41,13 @@ logger = logging.getLogger(__name__)
 SCHEDULER_DIR = DATA_DIR / "scheduler"
 SCHEDULER_DIR.mkdir(parents=True, exist_ok=True)
 RUN_LOG_PATH = SCHEDULER_DIR / "daily_runs.json"
+CHECKPOINT_PATH = SCHEDULER_DIR / "pipeline_checkpoint.json"
+
+STAGE_NAMES = [
+    "data_refresh", "decay_monitor", "evolution",
+    "oos_validation", "combination", "screening",
+    "paper_trading", "governance", "delivery_reports",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -119,9 +127,20 @@ class DailyScheduler:
         self.orth_guide = OrthogonalityGuide()
         self._alert_bus = None
 
-    def run_daily(self) -> DailyRunRecord:
-        """执行一次完整的日常任务。"""
+    def run_daily(self, resume: bool = False) -> DailyRunRecord:
+        """执行一次完整的日常任务。
+
+        Args:
+            resume: If True, skip stages already completed in checkpoint.
+        """
         now = datetime.now()
+        checkpoint = self._load_checkpoint() if resume else {}
+        skip_list = checkpoint.get("completed_stages", [])
+
+        if resume and skip_list:
+            logger.info("断点续跑模式: 已完成 %s，跳过已完成的 %d 个阶段",
+                       ", ".join(skip_list), len(skip_list))
+
         record = DailyRunRecord(
             run_id=f"daily_{now.strftime('%Y%m%d_%H%M%S')}",
             run_date=now.strftime("%Y-%m-%d"),
@@ -132,72 +151,109 @@ class DailyScheduler:
 
         try:
             # 阶段 1: 增量数据刷新
-            record.data_refresh = DataRefreshStage().run(self.ctx)
-            logger.info("数据刷新完成: %s", record.data_refresh.get("status", "unknown"))
+            if not self._should_skip("data_refresh", checkpoint):
+                record.data_refresh = DataRefreshStage().run(self.ctx)
+                self._save_checkpoint("data_refresh", record)
+                logger.info("数据刷新完成: %s", record.data_refresh.get("status", "unknown"))
+            else:
+                logger.info("跳过数据刷新（已完成）")
 
             # 阶段 2: 因子衰减监控
-            record.decay_monitor = DecayMonitorStage().run(self.ctx)
-            logger.info("衰减监控完成: %d 因子需再发掘", record.decay_monitor.get("decayed_count", 0))
+            if not self._should_skip("decay_monitor", checkpoint):
+                record.decay_monitor = DecayMonitorStage().run(self.ctx)
+                self._save_checkpoint("decay_monitor", record)
+                logger.info("衰减监控完成: %d 因子需再发掘", record.decay_monitor.get("decayed_count", 0))
+            else:
+                logger.info("跳过衰减监控（已完成）")
 
             # 阶段 3: 进化搜索（注入上一轮的 Agent 反馈）
-            evolution_stage = EvolutionStage(
-                experience_loop=self.experience_loop,
-                orth_guide=self.orth_guide,
-            )
-            feedback = self.ctx._meta.get("discovery_feedback", {})
-            if feedback:
-                logger.info("注入上一轮 Agent 反馈: %s",
-                           feedback.get("summary", "")[:120])
-                evolution_stage.agent_feedback = feedback
-            record.evolution = evolution_stage.run(self.ctx)
-            logger.info("进化搜索完成: 新增 %d 因子", record.evolution.get("new_approved", 0))
+            if not self._should_skip("evolution", checkpoint):
+                evolution_stage = EvolutionStage(
+                    experience_loop=self.experience_loop,
+                    orth_guide=self.orth_guide,
+                )
+                feedback = self.ctx._meta.get("discovery_feedback", {})
+                if feedback:
+                    logger.info("注入上一轮 Agent 反馈: %s",
+                               feedback.get("summary", "")[:120])
+                    evolution_stage.agent_feedback = feedback
+                record.evolution = evolution_stage.run(self.ctx)
+                self._save_checkpoint("evolution", record)
+                logger.info("进化搜索完成: 新增 %d 因子", record.evolution.get("new_approved", 0))
+            else:
+                logger.info("跳过进化搜索（已完成）")
 
             # 阶段 4: 样本外验证
-            try:
-                record.oos_validation = OOSValidationStage().run(self.ctx)
-                logger.info("OOS验证完成: 通过 %d / 失败 %d",
-                           record.oos_validation.get("passed", 0),
-                           record.oos_validation.get("failed", 0))
-            except Exception as exc:
-                logger.warning("OOS验证失败: %s", exc)
-                record.oos_validation = {"status": "failed", "error": str(exc)[:200]}
+            if not self._should_skip("oos_validation", checkpoint):
+                try:
+                    record.oos_validation = OOSValidationStage().run(self.ctx)
+                    self._save_checkpoint("oos_validation", record)
+                    logger.info("OOS验证完成: 通过 %d / 失败 %d",
+                               record.oos_validation.get("passed", 0),
+                               record.oos_validation.get("failed", 0))
+                except Exception as exc:
+                    logger.warning("OOS验证失败: %s", exc)
+                    record.oos_validation = {"status": "failed", "error": str(exc)[:200]}
+            else:
+                logger.info("跳过OOS验证（已完成）")
 
             # 阶段 5: 多因子组合
-            try:
-                record.combination = CombinationStage().run(self.ctx)
-                logger.info("多因子组合完成: 组合IC=%.4f", record.combination.get("combined_ic", 0))
-                if record.combination.get("status") == "success":
-                    record.combination["benchmark"] = _benchmark_compare(self.ctx, record.combination)
-            except Exception as exc:
-                logger.warning("多因子组合失败: %s", exc)
-                record.combination = {"status": "failed", "error": str(exc)[:200]}
+            if not self._should_skip("combination", checkpoint):
+                try:
+                    record.combination = CombinationStage().run(self.ctx)
+                    if record.combination.get("status") == "success":
+                        record.combination["benchmark"] = _benchmark_compare(self.ctx, record.combination)
+                    self._save_checkpoint("combination", record)
+                    logger.info("多因子组合完成: 组合IC=%.4f", record.combination.get("combined_ic", 0))
+                except Exception as exc:
+                    logger.warning("多因子组合失败: %s", exc)
+                    record.combination = {"status": "failed", "error": str(exc)[:200]}
+            else:
+                logger.info("跳过多因子组合（已完成）")
 
             # 阶段 6: 交付标准筛选
-            record.screening = DeliveryScreeningStage().run(self.ctx)
-            logger.info("筛选完成: %d 可交付因子", record.screening.get("deliverable_count", 0))
+            if not self._should_skip("screening", checkpoint):
+                record.screening = DeliveryScreeningStage().run(self.ctx)
+                self._save_checkpoint("screening", record)
+                logger.info("筛选完成: %d 可交付因子", record.screening.get("deliverable_count", 0))
+            else:
+                logger.info("跳过交付筛选（已完成）")
 
             # 阶段 6.5: 启动纸交易
             deliverable_ids = record.screening.get("deliverable_factor_ids", [])
             self.ctx._meta["deliverable_factor_ids"] = deliverable_ids
-            try:
-                record.paper_trading = PaperTradingStage().run(self.ctx)
-            except Exception as exc:
-                logger.warning("纸交易启动失败: %s", exc)
-                record.paper_trading = {"status": "failed", "error": str(exc)[:200]}
+            if not self._should_skip("paper_trading", checkpoint):
+                try:
+                    record.paper_trading = PaperTradingStage().run(self.ctx)
+                    self._save_checkpoint("paper_trading", record)
+                except Exception as exc:
+                    logger.warning("纸交易启动失败: %s", exc)
+                    record.paper_trading = {"status": "failed", "error": str(exc)[:200]}
+            else:
+                logger.info("跳过纸交易（已完成）")
 
             # 阶段 7: 因子库治理
-            try:
-                record.governance = GovernanceStage().run(self.ctx)
-                logger.info("因子库治理完成: 归档 %d 个因子", record.governance.get("archived_count", 0))
-            except Exception as exc:
-                logger.warning("因子库治理失败: %s", exc)
-                record.governance = {"status": "failed", "error": str(exc)[:200]}
+            if not self._should_skip("governance", checkpoint):
+                try:
+                    record.governance = GovernanceStage().run(self.ctx)
+                    self._save_checkpoint("governance", record)
+                    logger.info("因子库治理完成: 归档 %d 个因子", record.governance.get("archived_count", 0))
+                except Exception as exc:
+                    logger.warning("因子库治理失败: %s", exc)
+                    record.governance = {"status": "failed", "error": str(exc)[:200]}
+            else:
+                logger.info("跳过因子库治理（已完成）")
 
             # 阶段 8: 生成交付报告
-            record.delivery_reports = DeliveryReportStage().run(self.ctx)
-            logger.info("交付报告生成: %d 份", len(record.delivery_reports))
+            if not self._should_skip("delivery_reports", checkpoint):
+                record.delivery_reports = DeliveryReportStage().run(self.ctx)
+                self._save_checkpoint("delivery_reports", record)
+                logger.info("交付报告生成: %d 份", len(record.delivery_reports))
+            else:
+                logger.info("跳过交付报告（已完成）")
 
             record.status = "success"
+            self._clear_checkpoint()
 
         except Exception as exc:
             record.status = "failed"
@@ -208,6 +264,15 @@ class DailyScheduler:
 
         # 告警汇总
         self._emit_alerts(record)
+
+        # 数据刷新状态检查
+        self._check_data_freshness(record)
+
+        # 因子库自动备份
+        self._backup_factor_library()
+
+        # 邮件通知
+        self._send_email_summary(record)
 
         # 保存记录
         log = _load_run_log()
@@ -271,6 +336,91 @@ class DailyScheduler:
             logger.info("告警汇总: info=%d warning=%d critical=%d",
                        summary.get("info", 0), summary.get("warning", 0), summary.get("critical", 0))
 
+    # ------------------------------------------------------------------
+    # Pipeline recovery: checkpoint + resume
+    # ------------------------------------------------------------------
+
+    def _save_checkpoint(self, stage_name: str, record: DailyRunRecord) -> None:
+        """Save pipeline progress checkpoint after each stage."""
+        try:
+            cp = {"run_id": record.run_id, "completed_stages": []}
+            if CHECKPOINT_PATH.exists():
+                cp = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+                if cp.get("run_id") != record.run_id:
+                    cp = {"run_id": record.run_id, "completed_stages": []}
+            if stage_name not in cp["completed_stages"]:
+                cp["completed_stages"].append(stage_name)
+            cp["last_updated"] = datetime.now().isoformat()
+            CHECKPOINT_PATH.write_text(json.dumps(cp, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _load_checkpoint(self) -> dict[str, Any]:
+        """Load pipeline checkpoint. Returns empty dict if no checkpoint."""
+        if CHECKPOINT_PATH.exists():
+            try:
+                return json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        return {}
+
+    def _clear_checkpoint(self) -> None:
+        """Clear checkpoint after successful full run."""
+        if CHECKPOINT_PATH.exists():
+            CHECKPOINT_PATH.unlink()
+
+    def _should_skip(self, stage_name: str, checkpoint: dict) -> bool:
+        """Check if a stage should be skipped (already completed)."""
+        return stage_name in checkpoint.get("completed_stages", [])
+
+    def _check_data_freshness(self, record: DailyRunRecord) -> None:
+        """检查数据新鲜度，过期时标记告警。"""
+        try:
+            import pandas as pd
+            from quantlab.config import DEFAULT_DATA_PATH
+            df = pd.read_csv(DEFAULT_DATA_PATH)
+            last_date = pd.to_datetime(df["date"]).max()
+            days_old = (datetime.now() - last_date).days
+            if days_old > 3:
+                alert_bus = self._get_alert_bus()
+                alert_bus.warning(
+                    "数据过期告警",
+                    f"最新数据日期={last_date.strftime('%Y-%m-%d')}, 已过期{days_old}天",
+                    source="data_freshness",
+                )
+                record.status = "partial" if record.status == "success" else record.status
+        except Exception:
+            pass
+
+    def _backup_factor_library(self) -> None:
+        """自动备份因子库（保留最近30份）。"""
+        try:
+            import shutil
+            backup_dir = DATA_DIR / "scheduler" / "factor_library_backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            from quantlab.factor_discovery.runtime import PersistentFactorStore
+            store = PersistentFactorStore()
+            src = store._library_path
+            if src.exists():
+                ts = datetime.now().strftime("%Y%m%d_%H%M")
+                dst = backup_dir / f"factor_library_{ts}.json"
+                shutil.copy2(src, dst)
+                # 保留最近30份
+                backups = sorted(backup_dir.glob("factor_library_*.json"))
+                for old in backups[:-30]:
+                    old.unlink()
+        except Exception:
+            pass
+
+    def _send_email_summary(self, record: DailyRunRecord) -> None:
+        """发送日度邮件报告（非阻塞）。"""
+        try:
+            from quantlab.assistant.email_notifier import EmailNotifier
+            notifier = EmailNotifier()
+            notifier.send_daily_summary(record.to_dict())
+        except Exception as exc:
+            logger.debug("邮件发送跳过: %s", exc)
+
     def _get_alert_bus(self):
         if self._alert_bus is None:
             from quantlab.assistant.notifier import AlertBus
@@ -323,7 +473,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="quant-agent 每日调度器")
     sub = parser.add_subparsers(dest="command")
 
-    sub.add_parser("run_daily", help="执行一次日常任务")
+    run_parser = sub.add_parser("run_daily", help="执行一次日常任务")
+    run_parser.add_argument("--resume", action="store_true", help="从上次断点续跑")
     sub.add_parser("status", help="查看最近执行记录")
 
     cron_parser = sub.add_parser("install_cron", help="安装每日定时任务")
@@ -336,7 +487,7 @@ def main() -> None:
 
     if args.command == "run_daily":
         scheduler = DailyScheduler()
-        record = scheduler.run_daily()
+        record = scheduler.run_daily(resume=getattr(args, "resume", False))
         print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2, default=str))
 
     elif args.command == "status":

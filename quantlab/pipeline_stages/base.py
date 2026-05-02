@@ -32,18 +32,21 @@ class PipelineContext:
     # Cached data / meta
     _market_df: pd.DataFrame | None = field(default=None, repr=False)
     _meta: dict[str, Any] = field(default_factory=dict, repr=False)
+    _data_loaded: bool = field(default=False, repr=False)
 
     def load_data(self, apply_survivorship: bool = True, check_quality: bool = True) -> pd.DataFrame:
-        """加载市场数据（带缓存）。"""
-        if self._market_df is not None and not apply_survivorship and not check_quality:
+        """加载市场数据（带缓存，跨阶段复用，避免重复IO）。"""
+        if self._market_df is not None:
             return self._market_df
         df = _load_market_data(self.data_path, apply_survivorship, check_quality)
-        if not apply_survivorship and not check_quality:
-            self._market_df = df
+        self._market_df = df
+        self._data_loaded = True
         return df
 
     def invalidate_cache(self) -> None:
+        """强制刷新缓存（仅在数据刷新后调用）。"""
         self._market_df = None
+        self._data_loaded = False
 
 
 class PipelineStage(ABC):

@@ -488,6 +488,8 @@ class FactorLibraryEntry:
     monitoring_metrics: list[str] = field(default_factory=lambda: ["rank_ic_mean", "ic_ir", "turnover", "originality_score"])
     experience_refs: list[str] = field(default_factory=list)
     panel_snapshot_path: str | None = None
+    semantic_name: str = ""
+    version: str = "1.0"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -500,6 +502,8 @@ class FactorLibraryEntry:
             "monitoring_metrics": self.monitoring_metrics,
             "experience_refs": self.experience_refs,
             "panel_snapshot_path": self.panel_snapshot_path,
+            "semantic_name": self.semantic_name,
+            "version": self.version,
         }
 
     @classmethod
@@ -531,6 +535,8 @@ class FactorLibraryEntry:
             monitoring_metrics=list(payload.get("monitoring_metrics", ["rank_ic_mean", "ic_ir", "turnover", "originality_score"]) or []),
             experience_refs=list(payload.get("experience_refs", []) or []),
             panel_snapshot_path=payload.get("panel_snapshot_path"),
+            semantic_name=str(payload.get("semantic_name", "") or ""),
+            version=str(payload.get("version", "1.0") or "1.0"),
         )
 
 

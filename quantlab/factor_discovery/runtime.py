@@ -295,7 +295,29 @@ class PersistentFactorStore:
         return [FactorLibraryEntry.from_dict(item) for item in payload.get("entries", []) or []]
 
     def upsert_library_entry(self, entry: FactorLibraryEntry, factor_panel: pd.DataFrame | None = None) -> None:
-        entries = [item for item in self.load_library_entries() if item.factor_spec.factor_id != entry.factor_spec.factor_id]
+        all_entries = self.load_library_entries()
+        existing = [item for item in all_entries if item.factor_spec.factor_id == entry.factor_spec.factor_id]
+        entries = [item for item in all_entries if item.factor_spec.factor_id != entry.factor_spec.factor_id]
+
+        # ── Version chain preservation ──
+        # If this factor_id already exists and has NOT been registered in the version
+        # manager, register its initial version. Subsequent updates will reuse the
+        # version assigned by the caller (e.g. EvolutionStage naming pass).
+        if existing:
+            try:
+                from quantlab.factor_discovery.factor_namer import FactorVersionManager
+                vm = FactorVersionManager()
+                fid = entry.factor_spec.factor_id
+                if vm.get_latest_version(fid) is None:
+                    new_ver = vm.register(
+                        fid,
+                        parent_id=entry.factor_spec.parent_factor_id or None,
+                        version_override=entry.version or "1.0",
+                    )
+                    entry.version = new_ver
+            except Exception:
+                pass  # Non-critical; don't block upsert over version tracking
+
         snapshot_path = entry.panel_snapshot_path
         if factor_panel is not None and not factor_panel.empty:
             snapshot_file = self.panel_dir / f"{entry.factor_spec.factor_id}__{entry.factor_spec.version}.csv"

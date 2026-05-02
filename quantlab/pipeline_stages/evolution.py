@@ -121,6 +121,27 @@ class EvolutionStage(PipelineStage):
         total_approved = 0
         all_results = []
 
+        # 衰减→再发掘闭环: 对衰减因子进行定向再进化
+        decayed_factors = ctx._meta.get("decayed_factors", [])
+        if decayed_factors:
+            logger.info("衰减闭环: %d 个衰减因子触发定向再进化", len(decayed_factors))
+            for df_info in decayed_factors[:5]:  # 最多处理5个衰减因子
+                try:
+                    df_id = df_info.get("factor_id", "")
+                    df_direction = df_info.get("direction", "")
+                    df_reason = df_info.get("reason", "")
+                    logger.info("定向再进化: %s (方向=%s, 原因=%s)", df_id, df_direction, df_reason)
+                    # 使用衰减因子的方向进行定向进化
+                    if df_direction and df_direction not in effective_directions:
+                        effective_directions.insert(0, df_direction)
+                        meta_params[df_direction] = {
+                            "rounds": ctx.evolution_rounds,
+                            "candidates": min(ctx.max_candidates_per_round + 2, 8),
+                            "target_decayed_factor": df_id,
+                        }
+                except Exception as exc:
+                    logger.warning("衰减因子再进化失败 %s: %s", df_id, exc)
+
         # Adaptive direction selection
         effective_directions, meta_params = self._select_directions(ctx)
 
@@ -170,12 +191,76 @@ class EvolutionStage(PipelineStage):
                 logger.warning("方向 %s 进化失败: %s", direction, exc)
                 all_results.append({"direction": direction, "error": str(exc)[:200]})
 
+        # Assign semantic names and register versions for newly approved factors
+        if total_approved > 0:
+            try:
+                self._assign_names_and_versions(store)
+            except Exception as exc:
+                logger.warning("因子命名/版本分配失败: %s", exc)
+
         return {
             "status": "success",
             "new_approved": total_approved,
             "directions": all_results,
             "adaptive_selection": ctx.use_adaptive_directions,
         }
+
+    def _assign_names_and_versions(self, store: Any) -> None:
+        """Assign semantic names and register version chains for unnamed factors.
+
+        Iterates all library entries; for any entry missing a semantic_name,
+        generates one via FactorNamer and registers a version via FactorVersionManager.
+        """
+        from quantlab.factor_discovery.factor_namer import FactorNamer, FactorVersionManager
+
+        namer = FactorNamer()
+        vm = FactorVersionManager()
+
+        # Try to get an LLM client for richer names
+        llm_client = None
+        if self._llm_available():
+            try:
+                from quantlab.factor_discovery.multi_agent import LLMClient
+                llm = LLMClient()
+                llm._load_from_env()
+                if llm.api_key:
+                    llm_client = llm
+            except Exception:
+                pass
+
+        entries = store.load_library_entries()
+        renamed = 0
+        for entry in entries:
+            if entry.semantic_name:
+                continue
+
+            try:
+                # Generate semantic name
+                name = namer.generate_name(
+                    entry.factor_spec,
+                    entry.latest_report,
+                    llm_client=llm_client,
+                )
+                entry.semantic_name = name
+
+                # Register version if not yet tracked
+                fid = entry.factor_spec.factor_id
+                if vm.get_latest_version(fid) is None:
+                    new_ver = vm.register(
+                        fid,
+                        parent_id=entry.factor_spec.parent_factor_id or None,
+                        version_override=entry.version or "1.0",
+                    )
+                    entry.version = new_ver
+
+                # Re-persist with updated fields
+                store.upsert_library_entry(entry)
+                renamed += 1
+            except Exception as exc:
+                logger.warning("因子 %s 命名失败: %s", entry.factor_spec.factor_id, exc)
+
+        if renamed:
+            logger.info("因子命名完成: %d 个因子已分配语义名称和版本", renamed)
 
     def _select_directions(self, ctx: PipelineContext) -> tuple[list[str], dict[str, dict]]:
         effective = list(ctx.directions)

@@ -153,10 +153,17 @@ class MessageBus:
 class BaseAgent(ABC):
     """Agent 基类。"""
 
-    def __init__(self, role: AgentRole, bus: MessageBus, llm_client: "LLMClient | None" = None) -> None:
+    def __init__(
+        self,
+        role: AgentRole,
+        bus: MessageBus,
+        llm_client: "LLMClient | None" = None,
+        supervisor: "LLMSupervisor | None" = None,
+    ) -> None:
         self.role = role
         self.bus = bus
         self.llm = llm_client
+        self.supervisor = supervisor
         self._log: list[dict] = []
 
     def _log_action(self, action: str, detail: dict[str, Any]) -> None:
@@ -199,7 +206,7 @@ class LLMClient:
         fallback_model: str = "",
         reasoning_effort: str = "",
         temperature: float = 0.3,
-        timeout: int = 120,
+        timeout: int = 600,
     ) -> None:
         self.base_url = base_url
         self.api_key = api_key
@@ -209,6 +216,12 @@ class LLMClient:
         self.temperature = temperature
         self.timeout = timeout
         self.context: list[dict] = []
+        self._last_raw_response: str = ""  # preserved for supervisor retry
+        # Circuit breaker state
+        self._call_latencies: list[float] = []
+        self._circuit_open: bool = False
+        self._circuit_opened_at: float = 0.0
+        self._circuit_cooldown: float = 3600.0  # 1 hour cooldown
 
     def add_context(self, role: str, content: str) -> None:
         """记录跨运行上下文条目。最多保留 20 条。"""
@@ -251,14 +264,44 @@ class LLMClient:
         if not self.reasoning_effort:
             self.reasoning_effort = os.environ.get("ASSISTANT_REASONING_EFFORT", "")
 
+    def is_circuit_open(self) -> bool:
+        """Check if circuit breaker is open (should skip LLM)."""
+        if self._circuit_open:
+            if time.time() - self._circuit_opened_at > self._circuit_cooldown:
+                self._circuit_open = False
+                self._call_latencies.clear()
+                logger.info("LLM 熔断冷却完成，恢复正常模式")
+                return False
+            return True
+        return False
+
+    def _update_circuit_state(self, latency: float) -> None:
+        """Track call latency and open circuit breaker if needed."""
+        self._call_latencies.append(latency)
+        if len(self._call_latencies) > 5:
+            self._call_latencies = self._call_latencies[-5:]
+        if len(self._call_latencies) >= 3:
+            slow = sum(1 for l in self._call_latencies if l > 30.0)
+            if slow >= 3:
+                self._circuit_open = True
+                self._circuit_opened_at = time.time()
+                logger.warning("LLM 熔断: 最近%d次调用中%d次>30秒，自动降级为模板模式",
+                             len(self._call_latencies), slow)
+
     def chat(self, system_prompt: str, user_prompt: str, temperature: float | None = None) -> str:
-        """单轮对话，返回文本。"""
+        """单轮对话，返回文本。如果熔断打开，直接抛异常。"""
         self._load_from_env()
+
+        # Circuit breaker check
+        if self.is_circuit_open():
+            raise RuntimeError("LLM 熔断保护：API响应过慢，已自动降级")
+
         if not self.base_url or not self.api_key:
             raise RuntimeError("LLM 未配置：请设置 ASSISTANT_BASE_URL 和 ASSISTANT_API_KEY")
 
         from urllib import error, request as urllib_req
 
+        t0 = time.time()
         endpoint = f"{self.base_url.rstrip('/')}/chat/completions"
         payload = {
             "model": self.model,
@@ -290,18 +333,23 @@ class LLMClient:
                     data = json.loads(resp.read().decode("utf-8"))
                     if model_name != self.model:
                         logger.info("LLM 降级成功: %s → %s", self.model, model_name)
+                    elapsed = time.time() - t0
+                    self._update_circuit_state(elapsed)
                     return data.get("choices", [{}])[0].get("message", {}).get("content", "")
             except error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="ignore")
                 last_error = RuntimeError(f"LLM 调用失败 HTTP {exc.code}: {detail}")
             except Exception as exc:
                 last_error = RuntimeError(f"LLM 调用失败: {exc}")
+                elapsed = time.time() - t0
+                self._update_circuit_state(elapsed)
 
         raise last_error
 
     def chat_json(self, system_prompt: str, user_prompt: str, temperature: float | None = None) -> dict[str, Any]:
         """单轮对话，期望返回 JSON。"""
         raw = self.chat(system_prompt, user_prompt, temperature)
+        self._last_raw_response = raw  # preserve for supervisor retry
         # 尝试提取 JSON 块
         text = raw.strip()
         if "```json" in text:
@@ -320,7 +368,7 @@ class LLMClient:
                 except json.JSONDecodeError:
                     pass
             logger.warning(f"LLM 返回非 JSON，原始内容: {text[:300]}")
-            return {"raw_response": text, "parse_error": True}
+            return {"raw_response": raw, "parse_error": True}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -529,6 +577,17 @@ class R1HypothesisGenerator(BaseAgent):
 
         try:
             result = self.llm.chat_json(R1_SYSTEM_PROMPT, user_prompt, temperature=0.7)
+            # Supervisor retry: if parse_error or missing required keys, attempt correction
+            if self.supervisor and (result.get("parse_error") or not result.get("hypotheses")):
+                raw_resp = result.get("raw_response", self.llm._last_raw_response)
+                supervised = self.supervisor.supervise(
+                    original_prompt=user_prompt,
+                    raw_response=raw_resp,
+                    expected_schema_keys=["hypotheses"],
+                )
+                if supervised["status"] == "supervised_ok":
+                    result = supervised["corrected"]
+                    logger.info("R1 supervisor corrected response (retries=%d)", supervised["retries_used"])
             hypotheses = result.get("hypotheses", [])
             if not hypotheses and not result.get("parse_error"):
                 # 尝试兼容不同格式
@@ -646,6 +705,17 @@ class R2HypothesisReviewer(BaseAgent):
 
         try:
             result = self.llm.chat_json(R2_SYSTEM_PROMPT, user_prompt, temperature=0.2)
+            # Supervisor retry: if parse_error or missing required keys, attempt correction
+            if self.supervisor and (result.get("parse_error") or not result.get("reviews")):
+                raw_resp = result.get("raw_response", self.llm._last_raw_response)
+                supervised = self.supervisor.supervise(
+                    original_prompt=user_prompt,
+                    raw_response=raw_resp,
+                    expected_schema_keys=["reviews"],
+                )
+                if supervised["status"] == "supervised_ok":
+                    result = supervised["corrected"]
+                    logger.info("R2 supervisor corrected response (retries=%d)", supervised["retries_used"])
             reviews = result.get("reviews", [])
             if reviews:
                 r = reviews[0]
@@ -841,6 +911,17 @@ class P1Architect(BaseAgent):
 
         try:
             result = self.llm.chat_json(P1_SYSTEM_PROMPT, user_prompt, temperature=0.2)
+            # Supervisor retry: if parse_error or missing required keys, attempt correction
+            if self.supervisor and (result.get("parse_error") or not result.get("programming_plan")):
+                raw_resp = result.get("raw_response", self.llm._last_raw_response)
+                supervised = self.supervisor.supervise(
+                    original_prompt=user_prompt,
+                    raw_response=raw_resp,
+                    expected_schema_keys=["programming_plan"],
+                )
+                if supervised["status"] == "supervised_ok":
+                    result = supervised["corrected"]
+                    logger.info("P1 supervisor corrected response (retries=%d)", supervised["retries_used"])
             plan_data = result.get("programming_plan", {})
             return ProgrammingPlan(
                 factor_id=hyp.hypothesis_id,
@@ -1255,6 +1336,8 @@ class MultiAgentConfig:
     enable_factor_combination: bool = True  # 多因子组合
     enable_custom_code_gen: bool = True  # P3 定制代码生成
     enable_knowledge_injection: bool = True  # 注入外部量化因子研究知识
+    enable_supervisor: bool = True  # LLM 输出质量监控 + 自动修正重试
+    supervisor_max_retries: int = 2
     param_search_trials: int = 20  # 参数搜索最大尝试数
 
 
@@ -1289,11 +1372,17 @@ class FactorMultiAgentOrchestrator:
             method="grid",
         ) if self.config.enable_param_search else None
 
-        # 初始化所有 Agent
-        self.r1 = R1HypothesisGenerator(self.bus, self.llm)
+        # LLM Supervisor（输出质量监控 + 自动修正）
+        supervisor = None
+        if self.config.enable_supervisor:
+            from .llm_supervisor import LLMSupervisor
+            supervisor = LLMSupervisor(self.llm, max_retries=self.config.supervisor_max_retries)
+
+        # 初始化所有 Agent（带 supervisor 的会进行输出质量监控）
+        self.r1 = R1HypothesisGenerator(self.bus, self.llm, supervisor=supervisor)
         self.r1._orth_guide = self.orth_guide
-        self.r2 = R2HypothesisReviewer(self.bus, self.llm)
-        self.p1 = P1Architect(self.bus, self.llm)
+        self.r2 = R2HypothesisReviewer(self.bus, self.llm, supervisor=supervisor)
+        self.p1 = P1Architect(self.bus, self.llm, supervisor=supervisor)
         self.p2 = P2BlockAssembler(self.bus, self.llm)
         self.p3 = P3CustomCoder(self.bus, self.llm)
         self.t1 = T1Backtester(self.bus, param_searcher=param_searcher)

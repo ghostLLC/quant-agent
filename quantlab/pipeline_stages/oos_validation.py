@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from quantlab.metrics import compute_rank_ic
@@ -133,6 +134,17 @@ class AgentOOSValidationStage(PipelineStage):
             "asset_count": split_result.test_assets,
         }
 
+        # ---- Walk-Forward 验证层 ----
+        walk_forward = {}
+        try:
+            walk_forward = _run_walk_forward(approved, market_df, executor)
+            logger.info("Walk-Forward完成: %d/%d 稳定",
+                       walk_forward.get("stable_count", 0),
+                       walk_forward.get("total_tested", 0))
+        except Exception as exc:
+            logger.warning("Walk-Forward验证失败: %s", exc)
+            walk_forward = {"status": "failed", "error": str(exc)[:200]}
+
         # ---- Agent 分析层 ----
         oos_analysis = {}
         discovery_feedback = {}
@@ -171,11 +183,123 @@ class AgentOOSValidationStage(PipelineStage):
             "cutoff_date": str(split_result.cutoff_date.date()),
             "test_days": split_result.test_trading_days,
             "checks": checks,
+            "walk_forward": walk_forward,
             "agent_analysis": oos_analysis,
             "discovery_feedback": discovery_feedback,
         }
 
-    def _save_oos_record(
+def _run_walk_forward(
+    entries: list,
+    market_df: pd.DataFrame,
+    executor: Any,
+    train_months: int = 36,
+    test_months: int = 6,
+    step_months: int = 6,
+) -> dict[str, Any]:
+    """Walk-forward OOS validation across multiple rolling windows.
+
+    For each window: train on [T-train_months, T), test on [T, T+test_months).
+    Slides forward by step_months. Requires at least 2 complete windows.
+
+    Returns stability metrics: OOS IC across windows, win rate, max drawdown.
+    """
+    from quantlab.metrics import compute_rank_ic
+
+    dates = sorted(pd.to_datetime(market_df["date"]).unique())
+    if len(dates) < (train_months + test_months) * 21:
+        return {"status": "skipped", "reason": f"需要至少 {(train_months+test_months)*21} 个交易日"}
+
+    # Generate windows
+    windows = []
+    start_idx = 0
+    while True:
+        train_end_idx = start_idx + train_months * 21  # ~21 trading days/month
+        test_end_idx = train_end_idx + test_months * 21
+        if test_end_idx > len(dates):
+            break
+        windows.append({
+            "train_start": dates[start_idx],
+            "train_end": dates[train_end_idx - 1],
+            "test_start": dates[train_end_idx],
+            "test_end": dates[min(test_end_idx, len(dates)) - 1],
+        })
+        start_idx += step_months * 21
+
+    if len(windows) < 2:
+        return {"status": "skipped", "reason": f"仅 {len(windows)} 个窗口，需至少2个"}
+
+    # Run validation per factor
+    wf_results: dict[str, dict] = {}
+    for entry in entries:
+        fid = entry.factor_spec.factor_id
+        window_ics = []
+        window_passed = []
+
+        for w in windows:
+            try:
+                train_df = market_df[
+                    (pd.to_datetime(market_df["date"]) >= w["train_start"]) &
+                    (pd.to_datetime(market_df["date"]) <= w["train_end"])
+                ]
+                test_df = market_df[
+                    (pd.to_datetime(market_df["date"]) >= w["test_start"]) &
+                    (pd.to_datetime(market_df["date"]) <= w["test_end"])
+                ]
+                if len(train_df) < 100 or len(test_df) < 40:
+                    continue
+
+                train_computed = executor.execute(entry.factor_spec, train_df)
+                train_panel = train_computed.get("factor_panel")
+                test_computed = executor.execute(entry.factor_spec, test_df)
+                test_panel = test_computed.get("factor_panel")
+                if train_panel is None or test_panel is None:
+                    continue
+
+                train_ic = compute_rank_ic(train_panel, train_df)["ic_mean"]
+                test_ic = compute_rank_ic(test_panel, test_df)["ic_mean"]
+                window_ics.append({
+                    "train_start": str(w["train_start"].date()),
+                    "test_start": str(w["test_start"].date()),
+                    "train_ic": round(train_ic, 6),
+                    "test_ic": round(test_ic, 6),
+                })
+                window_passed.append(test_ic > 0)
+            except Exception:
+                pass
+
+        if len(window_ics) >= 2:
+            test_ics = [w["test_ic"] for w in window_ics]
+            mean_oos = float(np.mean(test_ics)) if test_ics else 0.0
+            std_oos = float(np.std(test_ics, ddof=1)) if len(test_ics) > 1 else 0.0
+            win_rate = float(np.mean(window_passed)) if window_passed else 0.0
+            # Max OOS IC drawdown across windows
+            cumsum = np.cumsum(test_ics)
+            peak = np.maximum.accumulate(cumsum)
+            dd = np.max(peak - cumsum) if len(cumsum) > 0 else 0.0
+
+            wf_results[fid] = {
+                "n_windows": len(window_ics),
+                "mean_oos_ic": round(mean_oos, 6),
+                "std_oos_ic": round(std_oos, 6),
+                "oos_ic_ir": round(mean_oos / max(std_oos, 1e-10), 4),
+                "win_rate": round(win_rate, 4),
+                "max_ic_drawdown": round(float(dd), 6),
+                "stable": win_rate >= 0.6 and mean_oos > 0,
+                "windows": window_ics,
+            }
+
+    stable_count = sum(1 for r in wf_results.values() if r.get("stable", False))
+    return {
+        "status": "success",
+        "n_windows": len(windows),
+        "total_tested": len(wf_results),
+        "stable_count": stable_count,
+        "stability_ratio": round(stable_count / max(len(wf_results), 1), 4),
+        "per_factor": wf_results,
+    }
+
+
+def _save_oos_record(
         self,
         checks: list[dict],
         analysis: dict[str, Any],

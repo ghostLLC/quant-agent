@@ -324,8 +324,124 @@ def incremental_refresh(output_path: Path) -> None:
         combined = combined.drop_duplicates(subset=["date", "asset"], keep="last")
         combined = combined.sort_values(["date", "asset"]).reset_index(drop=True)
         _save_output(combined, output_path)
+        # Refresh PE/PB fundamentals for new data
+        _refresh_fundamentals(combined, output_path)
     else:
         print("  No new data.")
+        # Still check if fundamentals need update (new quarter)
+        _refresh_fundamentals(existing, output_path)
+
+
+def _refresh_fundamentals(df: pd.DataFrame, output_path: Path) -> None:
+    """Update PE/PB for new dates using akshare financial data.
+
+    Only refreshes if last PE update > 30 days ago (quarterly financials).
+    Detects new quarter by checking if the most recent PE date is stale.
+    """
+    _print_bar("Refreshing PE/PB fundamentals")
+
+    try:
+        import akshare as ak
+
+        # Check if fundamentals need refresh
+        last_pe_dates = df.dropna(subset=["pe"])["date"]
+        if not last_pe_dates.empty:
+            last_pe_date = pd.to_datetime(last_pe_dates).max()
+            days_since = (datetime.now() - last_pe_date).days
+            if days_since < 60:
+                print(f"  Fundamentals up to date (last PE: {last_pe_date.strftime('%Y-%m-%d')}, {days_since}d ago)")
+                return
+
+        print(f"  Updating PE/PB for {df['asset'].nunique()} assets...")
+
+        # Only refresh for a sample to keep it fast
+        assets = sorted(df["asset"].unique())
+        pe_rows = []
+        pb_rows = []
+        ok = 0
+
+        for i, code in enumerate(assets):
+            if i > 0 and i % 60 == 0:
+                print(f"  {i}/{len(assets)} (ok={ok})")
+            try:
+                # PE from financial abstract
+                fa = ak.stock_financial_abstract(symbol=code)
+                if fa is not None and not fa.empty:
+                    profit_mask = fa["指标"] == "归母净利润"
+                    if profit_mask.any():
+                        date_cols = [c for c in fa.columns if c not in ["选项", "指标"]]
+                        profits = fa.loc[profit_mask, date_cols].iloc[0].astype(float)
+                        q_dates = pd.to_datetime(date_cols, format="%Y%m%d", errors="coerce")
+                        qdf = pd.DataFrame({"date": q_dates, "cum": profits.values}).dropna(subset=["date", "cum"])
+                        qdf = qdf.sort_values("date")
+                        if len(qdf) >= 2:
+                            qdf["q"] = qdf["cum"].diff()
+                            qdf.loc[qdf.index[0], "q"] = qdf["cum"].iloc[0]
+                            qdf["ttm"] = qdf["q"].rolling(4, min_periods=1).sum()
+                            adf = df[df["asset"] == code]
+                            for _, qrow in qdf.iterrows():
+                                if pd.isna(qrow["ttm"]) or qrow["ttm"] <= 0:
+                                    continue
+                                mcap_row = adf[adf["date"] <= qrow["date"]]
+                                if mcap_row.empty:
+                                    continue
+                                mcap = mcap_row["market_cap"].iloc[-1]
+                                if pd.isna(mcap) or mcap <= 0:
+                                    continue
+                                pe_rows.append({"asset": code, "date": qrow["date"], "pe": mcap / qrow["ttm"]})
+
+                # PB from Baidu
+                try:
+                    pb_df = ak.stock_zh_valuation_baidu(symbol=code, indicator="市净率", period="全部")
+                    if pb_df is not None and not pb_df.empty:
+                        pb_df["date"] = pd.to_datetime(pb_df["date"])
+                        pb_df = pb_df[pb_df["date"] >= "2021-01-01"]
+                        pb_df["asset"] = code
+                        pb_df = pb_df.rename(columns={"value": "pb"})
+                        pb_rows.append(pb_df[["date", "asset", "pb"]])
+                except Exception:
+                    pass
+
+                ok += 1
+            except Exception:
+                pass
+
+        # Merge PE
+        if pe_rows:
+            pe_df = pd.DataFrame(pe_rows)
+            pe_df["date"] = pd.to_datetime(pe_df["date"])
+            df = df.drop(columns=["pe"], errors="ignore")
+            df = df.sort_values(["asset", "date"])
+            pe_df = pe_df.sort_values(["asset", "date"])
+            frames = []
+            for code in df["asset"].unique():
+                adf = df[df["asset"] == code].copy()
+                pdf = pe_df[pe_df["asset"] == code]
+                if pdf.empty:
+                    frames.append(adf)
+                else:
+                    frames.append(pd.merge_asof(adf, pdf[["date", "asset", "pe"]], on="date", by="asset", direction="backward"))
+            df = pd.concat(frames, ignore_index=True)
+            df = df.sort_values(["asset", "date"])
+            df["pe"] = df.groupby("asset")["pe"].ffill()
+            df["pe"] = df.groupby("asset")["pe"].bfill()
+            print(f"  PE updated: {df['pe'].notna().mean():.0%}")
+
+        # Merge PB
+        if pb_rows:
+            pb_all = pd.concat(pb_rows, ignore_index=True).drop_duplicates(subset=["date", "asset"])
+            df = df.drop(columns=["pb"], errors="ignore")
+            df = df.merge(pb_all, on=["date", "asset"], how="left")
+            df = df.sort_values(["asset", "date"])
+            df["pb"] = df.groupby("asset")["pb"].ffill()
+            df["pb"] = df.groupby("asset")["pb"].bfill()
+            print(f"  PB updated: {df['pb'].notna().mean():.0%}")
+
+        _save_output(df, output_path)
+        print(f"  Fundamentals refreshed: PE={df['pe'].notna().mean():.0%} PB={df['pb'].notna().mean():.0%}")
+
+    except Exception as e:
+        print(f"  Fundamentals refresh failed (non-fatal): {e}")
 
 
 # ---------------------------------------------------------------------------
