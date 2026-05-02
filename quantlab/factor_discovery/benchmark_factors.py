@@ -259,9 +259,230 @@ BENCHMARK_REGISTRY: dict[str, dict[str, Any]] = {
             transform("ts_min", data("close"), window=20),
         )),
     },
+
+    # ═══════════════════════════════════════════════════════════════
+    # A-Share Specific (expanded: +8)
+    # ═══════════════════════════════════════════════════════════════
+    "A_Share_Limit_Up_Proximity": {
+        "category": "a_share_specific",
+        "description": "Close distance to 20d high — proximity to recent high signals limit-up momentum in A-shares",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("div", data("close"), transform("ts_max", data("close"), window=20))),
+    },
+    "A_Share_Limit_Down_Risk": {
+        "category": "a_share_specific",
+        "description": "Close distance from 20d low — farther from low = lower limit-down risk",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("sub", data("close"), transform("ts_min", data("close"), window=20))),
+    },
+    "A_Share_ST_Proxy": {
+        "category": "a_share_specific",
+        "description": "Extreme PB proxy for distressed/ST stocks — very low PB signals potential delisting risk in A-shares",
+        "direction": "higher_is_better",
+        "data_fields": ["pb"],
+        "block": _rank(transform("clip", data("pb"), lo=0.1, hi=10.0)),
+    },
+    "A_Share_Vol_Price_Coupling": {
+        "category": "a_share_specific",
+        "description": "20d corr(volume, |return|) — volume-return coupling signals retail-driven momentum in A-shares",
+        "direction": "higher_is_better",
+        "data_fields": ["close", "volume"],
+        "block": _rank(transform(
+            "ts_corr",
+            data("volume"),
+            window=20,
+            _right_block=transform("abs", combine("div", transform("delta", data("close"), window=1), data("close"))).to_dict(),
+        )),
+    },
+    "A_Share_Gap_Up_Frequency": {
+        "category": "a_share_specific",
+        "description": "Count of days where open > prev close * 1.02 in 20d — gap-up frequency signals bullish sentiment",
+        "direction": "higher_is_better",
+        "data_fields": ["open", "close"],
+        "block": _rank(transform("ts_sum",
+            transform("piecewise",
+                combine("sub", combine("div", data("open"), transform("lag", data("close"), window=1)),
+                       transform("constant", data("close"), value=1.02)),
+                threshold=0,
+            ), window=20)),
+    },
+    "A_Share_Overnight_Return": {
+        "category": "a_share_specific",
+        "description": "open / prev close - 1 — overnight gap captures A-share retail sentiment and policy news impact",
+        "direction": "higher_is_better",
+        "data_fields": ["open", "close"],
+        "block": _rank(combine("sub",
+            combine("div", data("open"), transform("lag", data("close"), window=1)),
+            transform("constant", data("close"), value=1.0))),
+    },
+    "A_Share_Small_Cap_Effect": {
+        "category": "a_share_specific",
+        "description": "Negative log market cap — A-share small-cap premium is historically strong (shell value, retail preference)",
+        "direction": "higher_is_better",
+        "data_fields": ["market_cap"],
+        "block": _rank(transform("log", transform("clip", data("market_cap"), lo=1e8, hi=1e13))),
+    },
+    "A_Share_Shell_Value_Proxy": {
+        "category": "a_share_specific",
+        "description": "Extreme small market cap + low PB composite — proxy for shell/restructuring value in A-shares",
+        "direction": "higher_is_better",
+        "data_fields": ["market_cap", "pb"],
+        "block": _rank(combine("add",
+            _negate(transform("log", transform("clip", data("market_cap"), lo=1e8, hi=1e13))),
+            _negate(transform("clip", data("pb"), lo=0.1, hi=10.0)),
+        )),
+    },
+
+    # ═══════════════════════════════════════════════════════════════
+    # Momentum (expanded: +4)
+    # ═══════════════════════════════════════════════════════════════
+    "Momentum_Overnight_20d": {
+        "category": "momentum",
+        "description": "Average overnight return over 20 days — isolates overnight momentum from intraday noise",
+        "direction": "higher_is_better",
+        "data_fields": ["open", "close"],
+        "block": _rank(transform("ts_mean",
+            combine("sub", combine("div", data("open"), transform("lag", data("close"), window=1)),
+                   transform("constant", data("close"), value=1.0)),
+            window=20)),
+    },
+    "Momentum_Risk_Adjusted_60d": {
+        "category": "momentum",
+        "description": "60d return / 60d std — Sharpe-style momentum (risk-adjusted trend)",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("div",
+            combine("div", transform("delta", data("close"), window=60), transform("lag", data("close"), window=60)),
+            transform("ts_std", combine("div", transform("delta", data("close"), window=1), data("close")), window=60),
+        )),
+    },
+    "Momentum_High_Low_20d": {
+        "category": "momentum",
+        "description": "(close - 20d low) / (20d high - 20d low) — stochastic momentum (not pure price trend)",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("div",
+            combine("sub", data("close"), transform("ts_min", data("close"), window=20)),
+            combine("sub", transform("ts_max", data("close"), window=20), transform("ts_min", data("close"), window=20)),
+        )),
+    },
+    "Momentum_Volume_Confirmed_20d": {
+        "category": "momentum",
+        "description": "20d return * (volume / 20d avg volume) — volume-confirmed momentum",
+        "direction": "higher_is_better",
+        "data_fields": ["close", "volume"],
+        "block": _rank(combine("mul",
+            combine("div", transform("delta", data("close"), window=20), transform("lag", data("close"), window=20)),
+            combine("div", data("volume"), transform("ts_mean", data("volume"), window=20)),
+        )),
+    },
+
+    # ═══════════════════════════════════════════════════════════════
+    # Reversal (expanded: +3)
+    # ═══════════════════════════════════════════════════════════════
+    "Reversal_Overnight_5d": {
+        "category": "reversal",
+        "description": "-1 * (5d overnight return avg) — overnight gap reversal (gap-up stocks tend to revert intraday)",
+        "direction": "higher_is_better",
+        "data_fields": ["open", "close"],
+        "block": _negate(_rank(transform("ts_mean",
+            combine("sub", combine("div", data("open"), transform("lag", data("close"), window=1)),
+                   transform("constant", data("close"), value=1.0)),
+            window=5))),
+    },
+    "Reversal_Extreme_Loser_20d": {
+        "category": "reversal",
+        "description": "Select stocks in bottom 20% of 20d return — extreme loser reversal effect",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _negate(_rank(combine(
+            "div", transform("delta", data("close"), window=20),
+            transform("lag", data("close"), window=20),
+        ))),
+    },
+    "Reversal_Vol_Normalized_5d": {
+        "category": "reversal",
+        "description": "-5d return / 20d std — volatility-normalised short-term reversal",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _negate(_rank(combine("div",
+            combine("div", transform("delta", data("close"), window=5), transform("lag", data("close"), window=5)),
+            transform("ts_std", combine("div", transform("delta", data("close"), window=1), data("close")), window=20),
+        ))),
+    },
+
+    # ═══════════════════════════════════════════════════════════════
+    # Behavioral Finance (+3)
+    # ═══════════════════════════════════════════════════════════════
+    "Behavioral_52_Week_High": {
+        "category": "behavioral",
+        "description": "close / 252d max close — George & Hwang (2004) 52-week high anchoring effect",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("div", data("close"), transform("ts_max", data("close"), window=252))),
+    },
+    "Behavioral_52_Week_Low": {
+        "category": "behavioral",
+        "description": "close / 252d min close — distance from 52-week low (anchoring from below)",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(combine("div", data("close"), transform("ts_min", data("close"), window=252))),
+    },
+    "Behavioral_Disposition_Proxy": {
+        "category": "behavioral",
+        "description": "20d turnover / 60d return — high turnover on gains signals disposition effect selling pressure",
+        "direction": "lower_is_better",
+        "data_fields": ["turnover", "close"],
+        "block": _negate(_rank(combine("div",
+            transform("ts_mean", data("turnover"), window=20),
+            combine("div", transform("delta", data("close"), window=60), transform("lag", data("close"), window=60)),
+        ))),
+    },
+
+    # ═══════════════════════════════════════════════════════════════
+    # Event-Driven (+2)
+    # ═══════════════════════════════════════════════════════════════
+    "Event_PEAD_Proxy": {
+        "category": "event_driven",
+        "description": "|5d return - 20d return| — return discontinuity proxies for earnings/news surprise (PEAD effect)",
+        "direction": "higher_is_better",
+        "data_fields": ["close"],
+        "block": _rank(transform("abs", combine("sub",
+            combine("div", transform("delta", data("close"), window=5), transform("lag", data("close"), window=5)),
+            combine("div", transform("delta", data("close"), window=20), transform("lag", data("close"), window=20)),
+        ))),
+    },
+    "Event_Gap_Reversal": {
+        "category": "event_driven",
+        "description": "Gap-up days (>2% open vs prev close) followed by reversal — event-driven mean reversion",
+        "direction": "higher_is_better",
+        "data_fields": ["open", "close"],
+        "block": _negate(_rank(transform("ts_mean",
+            transform("piecewise",
+                combine("sub", combine("div", data("open"), transform("lag", data("close"), window=1)),
+                       transform("constant", data("close"), value=1.02)),
+                threshold=0,
+            ), window=5))),
+    },
+
+    # ═══════════════════════════════════════════════════════════════
+    # Liquidity (expanded: +1)
+    # ═══════════════════════════════════════════════════════════════
+    "Liquidity_Pastor_Stambaugh_Proxy": {
+        "category": "liquidity",
+        "description": "sign(5d return) * 5d volume change — Pastor-Stambaugh (2003) liquidity beta proxy (order flow sensitivity)",
+        "direction": "higher_is_better",
+        "data_fields": ["close", "volume"],
+        "block": _rank(combine("mul",
+            transform("sign", combine("div", transform("delta", data("close"), window=5), transform("lag", data("close"), window=5))),
+            combine("div", transform("delta", data("volume"), window=5), transform("lag", data("volume"), window=5)),
+        )),
+    },
 }
 
-# Total: 23 benchmark factors across 7 categories
+# Total: 44 benchmark factors across 8 categories
 
 
 class BenchmarkFactorRegistry:
