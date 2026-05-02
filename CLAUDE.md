@@ -55,12 +55,12 @@ python -m quantlab.scheduler status
 # Install Windows scheduled task (daily 18:30)
 python -m quantlab.scheduler install_cron
 
-# Pull real zz800 cross-section data
-python pull_zz800_cross_section.py --start 20240101 --assets 150
+# Build/refresh the unified thick dataset (HS300, 2021+, 15 cols, incremental)
+python build_dataset.py --full      # First time: full build
+python refresh_data.py              # Incremental refresh (new dates only)
 
-# Refresh data (cross-section + ETF)
-python refresh_data.py
-python fetch_hs300_etf.py
+# Pull zz800 cross-section data (legacy)
+python pull_zz800_cross_section.py --start 20240101 --assets 150
 
 # Run backtest
 python run_backtest.py --data data/hs300_etf.csv --strategy ma_cross
@@ -85,7 +85,8 @@ D:\quant-agent\.venv\Scripts\python.exe -m ruff check quantlab/
 
 - `.env` at project root provides `TUSHARE_TOKEN` and LLM keys (`ASSISTANT_API_KEY`, `ASSISTANT_BASE_URL`, `ASSISTANT_MODEL`)
 - Token priority: `.env` → system env var → code argument
-- Python 3.10+, dependencies: `pandas>=2.2.0`, `numpy>=1.26.0`, `akshare>=1.18.55`
+- Python 3.10+, key dependencies: `pandas>=2.2.0`, `numpy>=1.26.0`, `akshare>=1.18.55`, `flask>=3.0.0`
+- GPU acceleration (optional): `pip install cupy-cuda12x` (NVIDIA GPU + CUDA 12.x required)
 - Project venv: `D:\quant-agent\.venv`
 
 ## Architecture
@@ -123,13 +124,15 @@ Data Refresh → Decay Monitor → Evolution Search (LLM-first) → OOS Validati
 
 **`quantlab/metrics/`** — Shared computation:
 - `compute_rank_ic(factor_values, market_df) → dict` — Unified Rank IC, used by all 7+ pipeline paths. Handles both flat Series and MultiIndex (date, asset) factor values.
+- `GpuAccelerator.compute_rank_ic_gpu()` — GPU-accelerated IC with automatic CPU fallback (threshold: >10k assets per cross-section). CuPy required for GPU path.
+- `GpuAccelerator.batch_compute_ic(factor_panels, market_df)` — Batch multi-factor evaluation. **Shares fwd_ret pre-computation across all factors** — for 500 factors, ~3.1x speedup over sequential `compute_rank_ic()` calls.
 
 **`quantlab/knowledge/`** — External research knowledge:
 - `FactorKnowledgeBase.get_knowledge_context(direction) → str` — Returns markdown-formatted academic factor research knowledge for LLM prompt injection.
 - `NewsIngestor` — Fetches A-share news via akshare, extracts factor research knowledge via LLM (rule-based fallback), deduplicates and persists to `assistant_data/news_knowledge.json`.
 
 **`quantlab/trading/`** — Trading engine: cost model, portfolio construction, simulator, risk control, broker interface.
-- `LiveSimulator` — Daily paper trading simulator: combines multi-factor signals, rebalances via OrderManager, persists NAV/positions/trades to `assistant_data/live_portfolio.json`.
+- `LiveSimulator.run_daily(date, factor_panels, market_df)` — Daily paper trading: multi-factor signal combination → OrderManager rebalance → NAV/persistence. Integration hook: `run_live_simulation(ctx, factor_panels)` for pipeline delivery stage.
 
 **`quantlab/web/`** — Web dashboard (Flask):
 - `GET /api/status` — factor count, pipeline runs, alerts
@@ -138,10 +141,8 @@ Data Refresh → Decay Monitor → Evolution Search (LLM-first) → OOS Validati
 - `GET /api/alerts` — recent alerts sorted by severity
 - `GET /` — HTML dashboard with auto-refresh
 
-**`quantlab/metrics/gpu_accelerator.py`** — GPU-accelerated IC computation:
-- `GpuAccelerator.gpu_available() → bool` — CuPy + GPU detection
-- `GpuAccelerator.compute_rank_ic_gpu()` — GPU Rank IC with automatic CPU fallback
-- `GpuAccelerator.batch_compute_ic()` — Batch multi-factor IC computation
+**`quantlab/strategies/`** — Strategy implementations (MA cross, channel breakout) with a registry pattern. Separate from the factor pipeline — these are traditional trading strategies for backtesting.
+**`quantlab/analysis/`** — Grid search, history store, validation utilities for backtest optimization.
 
 ### Critical Design Patterns
 
@@ -164,4 +165,4 @@ Data Refresh → Decay Monitor → Evolution Search (LLM-first) → OOS Validati
 - **CustomCodeGenerator sandbox**: `_safety_check()` uses AST validation first (`_ast_validate()`), substring blacklist second. `_sandbox_execute()` runs with restricted `__builtins__` (must include `__import__` for pandas/numpy imports). `SAFE_BUILTINS` controls the whitelist. Code must define `def compute_factor(df):`.
 - **Seed factor bootstrap**: `bootstrap_seed_factors()` requires `FactorLibraryEntry` with `latest_report` (minimal `FactorEvaluationReport` with empty `FactorScorecard`) and `retention_reason`. It calls `store.upsert_library_entry(entry, factor_panel=...)` to persist.
 - **PipelineContext._meta**: Used to pass deliverable factor IDs between stages (e.g., `ctx._meta = {"deliverable_factor_ids": ids}`).
-- **Config path**: `DEFAULT_CROSS_SECTION_DATA_PATH` in `config.py` points to `data/zz800_cross_section.csv`.
+- **Config path**: `DEFAULT_ZZ800_DATA_PATH` in `config.py` points to `data/zz800_cross_section.csv`. `DEFAULT_DATA_PATH` is aliased to it.

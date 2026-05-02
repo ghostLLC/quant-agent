@@ -4,7 +4,11 @@ from .base import PipelineContext, PipelineStage
 from .data_refresh import DataRefreshStage
 from .decay_monitor import DecayMonitorStage
 from .evolution import EvolutionStage
-from .oos_validation import OOSValidationStage
+from .oos_validation import AgentOOSValidationStage as OOSValidationStage
 from .combination import CombinationStage
-from .governance import GovernanceStage
-from .delivery import DeliveryScreeningStage, PaperTradingStage, DeliveryReportStage
+from .governance import AgentGovernanceStage as GovernanceStage
+from .delivery import (
+    AgentDeliveryReportStage as DeliveryReportStage,
+    DeliveryScreeningStage,
+    PaperTradingStage,
+)

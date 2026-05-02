@@ -1,8 +1,15 @@
-"""阶段 4: 样本外验证。"""
+"""阶段 4: 样本外验证 —— Agent 驱动诊断分析。
+
+保留全部数值计算（样本拆分 + IC计算），在此基础上由 AgentAnalyst
+对每个因子的OOS表现进行定性诊断，并生成跨因子汇总和下一轮发现反馈。
+LLM 不可用时回退到规则化诊断，不阻塞管线。
+"""
 
 from __future__ import annotations
 
+import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import pandas as pd
@@ -14,7 +21,27 @@ from .base import PipelineContext, PipelineStage
 logger = logging.getLogger(__name__)
 
 
-class OOSValidationStage(PipelineStage):
+class AgentOOSValidationStage(PipelineStage):
+    """Agent 驱动的样本外验证阶段。
+
+    数值计算层（始终执行）:
+      - SampleSplitter 拆分训练/测试集
+      - SafeFactorExecutor 执行因子
+      - compute_rank_ic 计算训练/测试 IC
+      - 成本调整 IC 计算
+
+    Agent 分析层（LLM 可用时执行）:
+      - 逐因子 OOS 诊断（健康/过拟合/结构断裂/信号不足）
+      - 跨因子汇总（表现最好/最差的因子族）
+      - 对下一轮因子发现的反馈建议
+
+    反馈闭环: 分析结果写入 ctx._meta["oos_analysis"] 和
+    ctx._meta["discovery_feedback"]，供 EvolutionStage 在下一轮读取。
+    """
+
+    def __init__(self, enable_agent: bool = True, agent_timeout: int = 90) -> None:
+        self.enable_agent = enable_agent
+
     def run(self, ctx: PipelineContext) -> dict[str, Any]:
         from quantlab.factor_discovery.runtime import PersistentFactorStore, SafeFactorExecutor
         from quantlab.factor_discovery.sample_split import SampleSplitter
@@ -39,6 +66,7 @@ class OOSValidationStage(PipelineStage):
         failed = 0
         checks = []
 
+        # ---- 数值计算层 ----
         for entry in approved:
             try:
                 train_df = split_result.train_df
@@ -68,6 +96,9 @@ class OOSValidationStage(PipelineStage):
 
                 checks.append({
                     "factor_id": entry.factor_spec.factor_id,
+                    "factor_name": getattr(entry.factor_spec, "name", ""),
+                    "factor_family": getattr(entry.factor_spec, "family", "unknown"),
+                    "direction": getattr(entry.factor_spec, "direction", ""),
                     "train_ic": train_ic,
                     "test_ic": test_ic,
                     "oos_decay": round(1.0 - test_ic / (train_ic + 1e-10), 4) if train_ic > 0 else 0.0,
@@ -87,10 +118,50 @@ class OOSValidationStage(PipelineStage):
             except Exception as exc:
                 checks.append({
                     "factor_id": entry.factor_spec.factor_id,
+                    "factor_name": getattr(entry.factor_spec, "name", ""),
+                    "factor_family": getattr(entry.factor_spec, "family", "unknown"),
                     "error": str(exc)[:200],
                     "passed": False,
                 })
                 failed += 1
+
+        # ---- 市场概览（供 Agent 分析使用） ----
+        market_summary = {
+            "train_days": split_result.train_trading_days,
+            "test_days": split_result.test_trading_days,
+            "cutoff_date": str(split_result.cutoff_date.date()),
+            "asset_count": split_result.test_assets,
+        }
+
+        # ---- Agent 分析层 ----
+        oos_analysis = {}
+        discovery_feedback = {}
+
+        if self.enable_agent and checks:
+            try:
+                from .agent_analyst import AgentAnalyst
+
+                analyst = AgentAnalyst(timeout=self.agent_timeout)
+                oos_analysis = analyst.analyze_oos(checks, market_summary)
+                logger.info(
+                    "Agent OOS 分析完成: status=%s, %d个因子已诊断",
+                    oos_analysis.get("status", "unknown"),
+                    len(oos_analysis.get("per_factor", [])),
+                )
+
+                # 生成跨轮反馈
+                governance_snapshot = ctx._meta.get("governance_analysis", {})
+                discovery_feedback = analyst.generate_feedback(oos_analysis, governance_snapshot)
+            except Exception as exc:
+                logger.warning("Agent OOS 分析失败: %s", exc)
+                oos_analysis = {"status": "failed", "error": str(exc)[:200]}
+
+        # ---- 反馈闭环: 写入 ctx._meta 供 EvolutionStage 读取 ----
+        ctx._meta["oos_analysis"] = oos_analysis
+        ctx._meta["discovery_feedback"] = discovery_feedback
+
+        # ---- 保存分析记录 ----
+        self._save_oos_record(checks, oos_analysis, discovery_feedback)
 
         return {
             "status": "success",
@@ -100,4 +171,42 @@ class OOSValidationStage(PipelineStage):
             "cutoff_date": str(split_result.cutoff_date.date()),
             "test_days": split_result.test_trading_days,
             "checks": checks,
+            "agent_analysis": oos_analysis,
+            "discovery_feedback": discovery_feedback,
         }
+
+    def _save_oos_record(
+        self,
+        checks: list[dict],
+        analysis: dict[str, Any],
+        feedback: dict[str, Any],
+    ) -> None:
+        """保存 OOS 分析记录到 scheduler 目录。"""
+        try:
+            from quantlab.config import DATA_DIR
+
+            record_dir = DATA_DIR / "scheduler"
+            record_dir.mkdir(parents=True, exist_ok=True)
+            record_path = record_dir / "oos_analysis.json"
+
+            records = []
+            if record_path.exists():
+                try:
+                    records = json.loads(record_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+
+            records.append({
+                "timestamp": datetime.now().isoformat(),
+                "checks": checks,
+                "agent_analysis": analysis,
+                "discovery_feedback": feedback,
+            })
+            records = records[-30:]
+
+            record_path.write_text(
+                json.dumps(records, ensure_ascii=False, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.debug("保存 OOS 分析记录失败: %s", exc)

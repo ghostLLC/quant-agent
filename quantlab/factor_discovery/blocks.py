@@ -78,6 +78,16 @@ class OperatorRegistry:
         "ema": {"arity": 1, "group_aware": False, "params": ["alpha"], "desc": "指数移动平均"},
         "rolling_ols_residual": {"arity": 1, "group_aware": False, "params": ["window"], "desc": "滚动 OLS 对市场回归取残差"},
         "constant": {"arity": 0, "group_aware": False, "params": ["value"], "desc": "常量值（忽略输入，返回固定标量）"},
+        # 数学变换
+        "power": {"arity": 1, "group_aware": False, "params": ["exponent"], "desc": "x^a 幂函数"},
+        "sqrt": {"arity": 1, "group_aware": False, "desc": "平方根"},
+        # 高阶矩
+        "ts_skew": {"arity": 1, "group_aware": False, "params": ["window"], "desc": "滚动偏度 (skewness)"},
+        "ts_kurt": {"arity": 1, "group_aware": False, "params": ["window"], "desc": "滚动峰度 (kurtosis)"},
+        # 归一化
+        "scale": {"arity": 1, "group_aware": False, "desc": "Min-Max 归一到 [0,1]"},
+        # 协方差
+        "ts_cov": {"arity": 2, "group_aware": False, "params": ["window"], "desc": "滚动协方差（需第二输入）"},
     }
 
     # Combine 算子
@@ -484,12 +494,34 @@ class BlockExecutor:
             if right_block:
                 right_inp = self._get_series(Block.from_dict(right_block), df)
             else:
-                # 如果没有第二输入，用自身（无意义但不会崩）
                 right_inp = inp
             combined = pd.DataFrame({"left": inp, "right": right_inp})
             return combined.groupby(level=self.asset_col).apply(
                 lambda g: g["left"].rolling(w, min_periods=1).corr(g["right"])
             ).droplevel(0) if len(combined) > 0 else inp * 0
+
+        elif op == "ts_cov":
+            w = int(params.get("window", 20))
+            right_block = params.get("_right_block")
+            if right_block:
+                right_inp = self._get_series(Block.from_dict(right_block), df)
+            else:
+                right_inp = inp
+            combined = pd.DataFrame({"left": inp, "right": right_inp})
+            return combined.groupby(level=self.asset_col).apply(
+                lambda g: g["left"].rolling(w, min_periods=1).cov(g["right"])
+            ).droplevel(0) if len(combined) > 0 else inp * 0
+
+        elif op == "ts_skew":
+            w = int(params.get("window", 20))
+            return inp.groupby(level=self.asset_col).transform(
+                lambda x: x.rolling(w, min_periods=w // 2).skew()
+            )
+        elif op == "ts_kurt":
+            w = int(params.get("window", 20))
+            return inp.groupby(level=self.asset_col).transform(
+                lambda x: x.rolling(w, min_periods=w // 2).kurt()
+            )
 
         # 条件类
         elif op == "abs":
@@ -507,6 +539,19 @@ class BlockExecutor:
         elif op == "piecewise":
             threshold = float(params.get("threshold", 0))
             return (inp > threshold).astype(float)
+
+        # 数学变换
+        elif op == "power":
+            exp = float(params.get("exponent", 2.0))
+            return inp.clip(-1e10, 1e10) ** exp
+        elif op == "sqrt":
+            return np.sqrt(inp.clip(lower=0))
+
+        # 归一化
+        elif op == "scale":
+            return inp.groupby(level=self.date_col).transform(
+                lambda x: (x - x.min()) / (x.max() - x.min() + 1e-10)
+            )
 
         # 分组类
         elif op == "group_neutralize":

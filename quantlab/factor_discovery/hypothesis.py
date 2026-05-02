@@ -144,6 +144,16 @@ OPERATOR_CATALOG: dict[str, dict[str, Any]] = {
     # 后处理
     "clip": {"arity": 1, "category": "postprocess", "params": ["lower", "upper"], "description": "截断"},
     "piecewise": {"arity": 1, "category": "postprocess", "params": ["threshold"], "description": "分段函数"},
+    # 数学变换
+    "power": {"arity": 1, "category": "math", "params": ["exponent"], "description": "幂函数 x^a"},
+    "sqrt": {"arity": 1, "category": "math", "description": "平方根"},
+    # 高阶矩
+    "ts_skew": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动偏度"},
+    "ts_kurt": {"arity": 1, "category": "time_series", "params": ["window"], "description": "滚动峰度"},
+    # 归一化
+    "scale": {"arity": 1, "category": "cross_section", "description": "Min-Max 归一化"},
+    # 协方差
+    "ts_cov": {"arity": 2, "category": "time_series", "params": ["window"], "description": "滚动协方差（需第二输入）"},
 }
 
 

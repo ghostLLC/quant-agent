@@ -1,17 +1,20 @@
+"""Refresh the thick cross-section dataset incrementally.
+
+Extends data/cross_section_thick.csv by pulling new OHLCV rows
+from tushare for all existing assets (new dates only).
+
+For a full historical extension: python build_dataset.py --full
+To use HS300 as-is:          python build_dataset.py --use-snapshot
+"""
+
 from __future__ import annotations
 
-from quantlab.config import DEFAULT_CROSS_SECTION_DATA_PATH
-from quantlab.pipeline import refresh_cross_section_data
+from build_dataset import incremental_refresh, THICK_DATASET
 
 
 def main() -> None:
-    summary = refresh_cross_section_data(DEFAULT_CROSS_SECTION_DATA_PATH)
-    print(
-        f"已更新横截面数据，共 {summary['rows']} 行、{summary['asset_count']} 个资产，"
-        f"区间 {summary['start_date']} ~ {summary['end_date']}"
-    )
+    incremental_refresh(THICK_DATASET)
 
 
 if __name__ == "__main__":
     main()
-

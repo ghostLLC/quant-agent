@@ -139,11 +139,16 @@ class DailyScheduler:
             record.decay_monitor = DecayMonitorStage().run(self.ctx)
             logger.info("衰减监控完成: %d 因子需再发掘", record.decay_monitor.get("decayed_count", 0))
 
-            # 阶段 3: 进化搜索
+            # 阶段 3: 进化搜索（注入上一轮的 Agent 反馈）
             evolution_stage = EvolutionStage(
                 experience_loop=self.experience_loop,
                 orth_guide=self.orth_guide,
             )
+            feedback = self.ctx._meta.get("discovery_feedback", {})
+            if feedback:
+                logger.info("注入上一轮 Agent 反馈: %s",
+                           feedback.get("summary", "")[:120])
+                evolution_stage.agent_feedback = feedback
             record.evolution = evolution_stage.run(self.ctx)
             logger.info("进化搜索完成: 新增 %d 因子", record.evolution.get("new_approved", 0))
 
@@ -173,7 +178,7 @@ class DailyScheduler:
 
             # 阶段 6.5: 启动纸交易
             deliverable_ids = record.screening.get("deliverable_factor_ids", [])
-            self.ctx._meta = {"deliverable_factor_ids": deliverable_ids}
+            self.ctx._meta["deliverable_factor_ids"] = deliverable_ids
             try:
                 record.paper_trading = PaperTradingStage().run(self.ctx)
             except Exception as exc:
@@ -218,6 +223,36 @@ class DailyScheduler:
             alert_bus.warning("数据刷新跳过", record.data_refresh.get("reason", ""), source="data_refresh")
         if record.decay_monitor.get("decayed_count", 0) > 0:
             alert_bus.warning("因子衰减告警", f"{record.decay_monitor.get('decayed_count')} 个因子已衰减", source="decay_monitor")
+
+        # Agent OOS 分析告警
+        oos_agent = record.oos_validation.get("agent_analysis", {})
+        if oos_agent.get("status") == "llm_analyzed":
+            cross = oos_agent.get("cross_factor_summary", {})
+            systemic = cross.get("systemic_issues")
+            if systemic:
+                alert_bus.warning("OOS 系统性风险", str(systemic)[:200], source="oos_agent")
+        if oos_agent.get("status") == "rule_fallback":
+            alert_bus.info("OOS 分析模式", "使用规则化回退（LLM未配置）", source="oos_agent")
+
+        # Agent 治理分析告警
+        gov_agent = record.governance.get("agent_analysis", {})
+        crowding_analysis = gov_agent.get("crowding_analysis", {})
+        if crowding_analysis.get("severity") in ("high", "critical"):
+            alert_bus.critical(
+                "拥挤度严重告警",
+                str(crowding_analysis.get("interpretation", ""))[:200],
+                source="governance_agent",
+            )
+        risk_summary = gov_agent.get("risk_summary", {})
+        if risk_summary.get("overall_level") in ("high", "critical"):
+            alert_bus.critical(
+                "综合风控告警",
+                "; ".join(risk_summary.get("top_risks", [])[:3]),
+                source="governance_agent",
+            )
+        if gov_agent.get("status") == "rule_fallback":
+            alert_bus.info("治理分析模式", "使用规则化回退（LLM未配置）", source="governance_agent")
+
         if record.governance.get("crowding", {}).get("crowded_factor_ids"):
             alert_bus.warning("拥挤度告警", "发现拥挤因子", source="crowding",
                              ids=record.governance["crowding"]["crowded_factor_ids"])

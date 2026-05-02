@@ -94,6 +94,7 @@ class EvolutionStage(PipelineStage):
     ) -> None:
         self.experience_loop = experience_loop or ExperienceLoop()
         self.orth_guide = orth_guide or OrthogonalityGuide()
+        self.agent_feedback: dict[str, Any] = {}
 
     def run(self, ctx: PipelineContext) -> dict[str, Any]:
         from quantlab.factor_discovery.evolution import EvolutionConfig, FactorEvolutionLoop
@@ -250,6 +251,23 @@ class EvolutionStage(PipelineStage):
         llm._load_from_env()
         if not llm.api_key:
             raise RuntimeError("LLM 未配置，无法使用多智能体模式")
+
+        # 注入上一轮的 Agent 反馈到 LLM 上下文
+        if self.agent_feedback:
+            fb_summary = self.agent_feedback.get("summary", "")
+            fb_prioritize = self.agent_feedback.get("directions_to_prioritize", [])
+            fb_avoid = self.agent_feedback.get("directions_to_avoid", [])
+            fb_patterns = self.agent_feedback.get("structural_patterns", {})
+            if fb_summary:
+                llm.add_context("system", f"[上一轮反馈] {fb_summary}")
+            if fb_prioritize:
+                llm.add_context("system", f"[优先方向] {', '.join(fb_prioritize)}")
+            if fb_avoid:
+                llm.add_context("system", f"[避免方向] {', '.join(fb_avoid)}")
+            if fb_patterns.get("what_worked"):
+                llm.add_context("system", f"[有效模式] {fb_patterns['what_worked']}")
+            if fb_patterns.get("what_failed"):
+                llm.add_context("system", f"[失败模式] {fb_patterns['what_failed']}")
 
         cfg = MultiAgentConfig(
             max_r1_r2_rounds=2,
